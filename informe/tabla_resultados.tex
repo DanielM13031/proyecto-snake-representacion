@@ -1,0 +1,30 @@
+\begin{table}[!htb]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\caption{Resultados promedio sobre 100 semillas (0--99), tablero $10\times10$, $k_{\max}=200$. Nodos y frontera son promedios por decisión.}
+\label{tab:resultados}
+\begin{tabular}{lcccccrrrr}
+\toprule
+Algoritmo & $\lambda$ & Long. final & Vict. (\%) & Fin $k_{\max}$ (\%) & Pasos/fruta & Gen. & Exp. & Front. máx. & $t$ (ms)\\
+\midrule
+\multicolumn{10}{l}{\textit{Sin chequeo de seguridad}}\\
+BFS & 0.0 & 34.2 $\pm$ 8.3 & 0 & 0 & 8.0 & 44.3 & 37.4 & 18.1 & 0.88\\
+DFS & 0.0 & 23.0 $\pm$ 1.8 & 0 & 0 & 40.5 & 82.8 & 46.5 & 77.0 & 1.05\\
+UCS & 0.5 & 32.1 $\pm$ 7.8 & 0 & 0 & 7.8 & 52.0 & 44.9 & 21.1 & 1.77\\
+Avara (Manh.) & 0.0 & 34.1 $\pm$ 8.6 & 0 & 0 & 8.2 & 21.7 & 12.8 & 23.4 & 0.97\\
+A* (Manh.) & 0.0 & 34.9 $\pm$ 9.1 & 0 & 0 & 8.1 & 29.2 & 20.7 & 22.3 & 0.97\\
+Haz (Manh.) & 0.0 & 34.7 $\pm$ 9.7 & 0 & 0 & 8.3 & 26.1 & 16.1 & 7.0 & 0.71\\
+\midrule
+\multicolumn{10}{l}{\textit{Con chequeo de seguridad}}\\
+BFS & 0.0 & 91.5 $\pm$ 12.1 & 8 & 82 & 19.1 & 57.3 & 50.7 & 18.3 & 1.09\\
+DFS & 0.0 & 94.4 $\pm$ 13.1 & 75 & 0 & 25.1 & 177.2 & 124.6 & 80.9 & 2.56\\
+UCS & 0.5 & 91.4 $\pm$ 6.7 & 0 & 90 & 20.9 & 58.8 & 53.2 & 21.1 & 2.02\\
+Avara (Manh.) & 0.0 & 93.5 $\pm$ 9.4 & 7 & 89 & 20.0 & 52.0 & 43.8 & 24.1 & 1.73\\
+A* (Manh.) & 0.0 & 93.3 $\pm$ 8.5 & 2 & 92 & 20.3 & 54.6 & 47.9 & 22.7 & 1.89\\
+A* (Eucl.) & 0.0 & 93.1 $\pm$ 7.6 & 3 & 92 & 20.8 & 53.6 & 47.2 & 24.8 & 1.90\\
+A* (Manh.) & 0.5 & 91.0 $\pm$ 7.2 & 2 & 92 & 20.7 & 54.6 & 46.9 & 26.6 & 2.71\\
+Haz (Manh.) & 0.0 & 92.3 $\pm$ 8.8 & 1 & 89 & 20.1 & 51.1 & 42.3 & 16.5 & 1.62\\
+\bottomrule
+\end{tabular}
+\end{table}

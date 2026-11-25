@@ -11,3 +11,11 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# LaTeX
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
