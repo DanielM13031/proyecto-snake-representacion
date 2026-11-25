@@ -1,54 +1,86 @@
-"""
-Módulo busqueda.py
-Estructura basada en los talleres del curso (busqueda.py, busqueda_2.py y utils_busqueda.py).
-Incluye:
-- ListaPrioritaria (respaldada por heapq con interfaz de los talleres)
-- Nodo, nodo_hijo, solucion, depth, camino_codigos, is_cycle
-- Algoritmos no informados en grafo: anchura (BFS), profundidad (DFS), backtracking, dijkstra (UCS)
-- Algoritmos informados en grafo: avara, a_estrella (A*), busqueda_haz (Beam Search)
-- Heurísticas: heuristica_manhattan, heuristica_euclidea, heuristica_riesgo
-- Registro de métricas y trazas paso a paso para la animación de la frontera y visitados.
+"""Algoritmos de búsqueda en grafo y heurísticas para Snake.
+
+El módulo incluye:
+
+- Estructuras de búsqueda: ``ListaPrioritaria``, ``Nodo``,
+  ``nodo_hijo``, ``solucion``, ``depth``, ``camino_codigos`` e
+  ``is_cycle``.
+- Heurísticas: ``heuristica_manhattan``, ``heuristica_euclidea`` y
+  ``heuristica_riesgo``.
+- Algoritmos no informados: ``anchura`` (BFS), ``profundidad`` (DFS),
+  ``backtracking`` y ``dijkstra`` (UCS).
+- Algoritmos informados: ``avara``, ``a_estrella`` (A*) y
+  ``busqueda_haz`` (Beam Search).
+- Registro de métricas y de la traza paso a paso que usa la interfaz
+  para animar la frontera y los nodos expandidos.
 """
 
-from collections import deque, namedtuple
-from dataclasses import dataclass, field
 import heapq
 import inspect
 import itertools
 import math
 import time
-from typing import List, Tuple, Optional, Dict, Callable, Any, Set, Iterable
+from collections import deque, namedtuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from ambientes import Celda, EstadoSnake, SubproblemaSnake, calcular_riesgo_celda
+from ambientes import (
+    Celda,
+    EstadoSnake,
+    SubproblemaSnake,
+    calcular_riesgo_celda,
+)
 
-# Límites amplios para tableros de Snake (10x10 hasta 20x20)
+# Cotas de seguridad: tamaño máximo de la frontera y profundidad máxima
+# del backtracking. Son holgadas para tableros de 10 x 10 hasta 20 x 20.
 max_size = 50000
 max_size_nodo = 2500
 
-Tupla = namedtuple('Tupla', ['elemento', 'valor'])
+# Pareja (elemento, prioridad) que devuelve ListaPrioritaria.
+Tupla = namedtuple("Tupla", ["elemento", "valor"])
 
 
 # =============================================================================
-# 1. ESTRUCTURAS DE DATOS DE LOS TALLERES (ListaPrioritaria y Nodo)
+# 1. Estructuras de datos de la búsqueda
 # =============================================================================
+
 
 class ListaPrioritaria:
-    """
-    Cola de prioridad compatible con busqueda.py / busqueda_2.py de los talleres,
-    optimizada internamente con heapq (como en utils_busqueda.py).
+    """Cola de prioridad de mínimos implementada con ``heapq``.
+
+    Un contador incremental desempata elementos con la misma prioridad,
+    de modo que salen en el orden en que entraron y nunca se comparan
+    los elementos entre sí.
     """
 
     def __init__(self):
+        """Crea una cola vacía."""
         self._heap: List[Tuple[float, int, Any]] = []
         self._counter = itertools.count()
 
     def __len__(self) -> int:
+        """Número de elementos en la cola."""
         return len(self._heap)
 
     def push(self, elemento: Any, valor: float) -> None:
-        heapq.heappush(self._heap, (float(valor), next(self._counter), elemento))
+        """Agrega ``elemento`` con prioridad ``valor``."""
+        heapq.heappush(
+            self._heap, (float(valor), next(self._counter), elemento)
+        )
 
     def pop(self, with_value: bool = False) -> Any:
+        """Saca el elemento de menor prioridad.
+
+        Parameters
+        ----------
+        with_value : bool
+            Si es verdadero, devuelve ``Tupla(elemento, valor)``.
+
+        Raises
+        ------
+        IndexError
+            Si la cola está vacía.
+        """
         if not self._heap:
             raise IndexError("pop desde una ListaPrioritaria vacía")
         valor, _, elemento = heapq.heappop(self._heap)
@@ -57,6 +89,7 @@ class ListaPrioritaria:
         return elemento
 
     def remove(self, elemento: Any) -> None:
+        """Elimina la primera aparición de ``elemento``, si existe."""
         for i, (_, _, el) in enumerate(self._heap):
             if el == elemento:
                 self._heap.pop(i)
@@ -64,26 +97,51 @@ class ListaPrioritaria:
                 break
 
     def elementos(self) -> List[Any]:
+        """Elementos de la cola ordenados por prioridad."""
         return [el for _, _, el in sorted(self._heap)]
 
     @property
     def pila(self) -> List[Tupla]:
+        """Parejas ``(elemento, valor)`` ordenadas por prioridad."""
         return [Tupla(el, val) for val, _, el in sorted(self._heap)]
 
     def is_empty(self) -> bool:
+        """Indica si la cola está vacía."""
         return len(self._heap) == 0
 
     def __str__(self) -> str:
+        """Representación ``[(elemento,valor), ...]`` en orden."""
         elementos_ordenados = sorted(self._heap)
-        interior = ", ".join(f"({el},{val})" for val, _, el in elementos_ordenados)
+        interior = ", ".join(
+            f"({el},{val})" for val, _, el in elementos_ordenados
+        )
         return f"[{interior}]"
 
 
 class Nodo:
-    """
-    Clase Nodo de los talleres del curso.
-    Mantiene los atributos originales (estado, madre, accion, costo_camino, codigo)
-    y añade metadatos para visualización y métricas de la rúbrica.
+    """Nodo del árbol de búsqueda.
+
+    Parameters
+    ----------
+    estado : Any
+        Estado que representa el nodo.
+    madre : Nodo or None
+        Nodo padre; ``None`` en la raíz.
+    accion : str or None
+        Acción que llevó de la madre a este nodo.
+    costo_camino : float
+        Costo acumulado g(n) desde la raíz.
+    codigo : str
+        Código del estado para la tabla de explorados.
+    heuristica : float
+        Valor h(n) de la heurística.
+    valor_f : float, optional
+        Prioridad f(n). Por defecto, g(n) + h(n).
+
+    Notes
+    -----
+    En el nodo solución se guardan además las métricas de la búsqueda:
+    nodos generados y expandidos, frontera máxima, tiempo y traza.
     """
 
     def __init__(
@@ -96,16 +154,23 @@ class Nodo:
         heuristica: float = 0.0,
         valor_f: Optional[float] = None,
     ):
+        """Crea el nodo y calcula su profundidad según la madre."""
         self.estado = estado
         self.madre = madre
         self.accion = accion
         self.costo_camino = float(costo_camino)
         self.codigo = codigo
         self.heuristica = float(heuristica)
-        self.valor_f = float(valor_f) if valor_f is not None else float(costo_camino + heuristica)
-        self._profundidad: int = 0 if madre is None else (madre._profundidad + 1)
+        self.valor_f = (
+            float(valor_f)
+            if valor_f is not None
+            else float(costo_camino + heuristica)
+        )
+        self._profundidad: int = (
+            0 if madre is None else (madre._profundidad + 1)
+        )
 
-        # Atributos de telemetría (se llenan en el nodo solución)
+        # Métricas de la búsqueda; solo se llenan en el nodo solución.
         self.nodos_generados: int = 0
         self.nodos_expandidos: int = 0
         self.max_frontera: int = 0
@@ -114,8 +179,10 @@ class Nodo:
 
 
 def nodo_hijo(problema: Any, madre: Nodo, accion: str) -> Nodo:
-    """
-    Función estándar de los talleres para generar un nodo sucesor.
+    """Genera el nodo hijo de aplicar ``accion`` a ``madre``.
+
+    El costo del hijo es el de la madre más el costo del paso según el
+    problema.
     """
     estado = problema.transicion(madre.estado, accion)
     costo_camino = madre.costo_camino + problema.costo(madre.estado, accion)
@@ -124,7 +191,7 @@ def nodo_hijo(problema: Any, madre: Nodo, accion: str) -> Nodo:
 
 
 def solucion(n: Optional[Nodo]) -> List[str]:
-    """Devuelve la secuencia de acciones desde la raíz hasta el nodo n (iterativo)."""
+    """Devuelve las acciones desde la raíz hasta el nodo ``n``."""
     if n is None:
         return []
     acciones: List[str] = []
@@ -137,7 +204,7 @@ def solucion(n: Optional[Nodo]) -> List[str]:
 
 
 def camino_celdas(n: Optional[Nodo]) -> List[Celda]:
-    """Devuelve la secuencia de casillas (x, y) recorridas por la cabeza hasta n."""
+    """Devuelve las celdas que recorre la cabeza hasta el nodo ``n``."""
     if n is None:
         return []
     celdas: List[Celda] = []
@@ -171,7 +238,7 @@ def camino_codigos(nodo: Optional[Nodo]) -> List[str]:
 
 
 def is_cycle(nodo: Nodo) -> bool:
-    """Verifica si el código del nodo ya apareció en su propia rama ancestral."""
+    """Indica si el código del nodo ya aparece entre sus ancestros."""
     codigo_actual = nodo.codigo
     actual = nodo.madre
     while actual is not None:
@@ -182,10 +249,18 @@ def is_cycle(nodo: Nodo) -> bool:
 
 
 # =============================================================================
-# 2. HEURÍSTICAS (ESTIMADORES DE PÉRDIDA FUTURA h(n))
+# 2. Heurísticas
 # =============================================================================
 
-def _obtener_objetivos(estado: EstadoSnake, objetivo: Optional[Celda] = None) -> Tuple[Celda, ...]:
+
+def _obtener_objetivos(
+    estado: EstadoSnake, objetivo: Optional[Celda] = None
+) -> Tuple[Celda, ...]:
+    """Devuelve las celdas objetivo para evaluar una heurística.
+
+    Si el objetivo es la fruta principal y hay varias frutas, devuelve
+    todas; si no se da objetivo, devuelve las frutas del estado.
+    """
     if objetivo is not None:
         if estado.frutas_extra and objetivo == estado.fruta:
             return estado.todas_las_frutas
@@ -193,10 +268,14 @@ def _obtener_objetivos(estado: EstadoSnake, objetivo: Optional[Celda] = None) ->
     return estado.todas_las_frutas
 
 
-def heuristica_manhattan(estado: EstadoSnake, objetivo: Optional[Celda] = None) -> float:
-    """
-    h_1(s): Distancia Manhattan estándar o toroidal hacia la fruta (u objetivo).
-    Admisible y consistente en Snake tanto con costo unitario como con costo de riesgo.
+def heuristica_manhattan(
+    estado: EstadoSnake, objetivo: Optional[Celda] = None
+) -> float:
+    """Heurística h_1: distancia Manhattan al objetivo más cercano.
+
+    En el modo toroidal usa la distancia Manhattan toroidal. Es
+    admisible y consistente porque cada paso mueve la cabeza una celda
+    y cuesta al menos 1, con o sin costo por riesgo.
     """
     objetivos = _obtener_objetivos(estado, objetivo)
     if not objetivos:
@@ -215,10 +294,13 @@ def heuristica_manhattan(estado: EstadoSnake, objetivo: Optional[Celda] = None) 
     return mejor
 
 
-def heuristica_euclidea(estado: EstadoSnake, objetivo: Optional[Celda] = None) -> float:
-    """
-    h_2(s): Distancia Euclídea estándar o toroidal.
-    Admisible y dominada por Manhattan: h_2(s) <= h_1(s) <= h*(s).
+def heuristica_euclidea(
+    estado: EstadoSnake, objetivo: Optional[Celda] = None
+) -> float:
+    """Heurística h_2: distancia euclídea al objetivo más cercano.
+
+    Es admisible porque h_2(s) <= h_1(s) <= h*(s), pero informa menos
+    que la distancia Manhattan.
     """
     objetivos = _obtener_objetivos(estado, objetivo)
     if not objetivos:
@@ -237,15 +319,20 @@ def heuristica_euclidea(estado: EstadoSnake, objetivo: Optional[Celda] = None) -
     return mejor
 
 
-def heuristica_riesgo(estado: EstadoSnake, objetivo: Optional[Celda] = None) -> float:
-    """
-    h_3(s): Heurística informada por pérdida de espacio local.
-    Suma a la distancia Manhattan una penalización por vecinos bloqueados r(h).
+def heuristica_riesgo(
+    estado: EstadoSnake, objetivo: Optional[Celda] = None
+) -> float:
+    """Heurística h_3: distancia Manhattan más 2 * r(h).
+
+    La penalización por vecinos bloqueados alrededor de la cabeza
+    favorece zonas despejadas, pero puede sobreestimar el costo real,
+    por lo que no es admisible.
     """
     base = heuristica_manhattan(estado, objetivo)
     return base + 2.0 * calcular_riesgo_celda(estado)
 
 
+# Heurísticas disponibles por nombre, para elegirlas desde texto.
 CATALOGO_HEURISTICAS: Dict[str, Callable] = {
     "manhattan": heuristica_manhattan,
     "euclidea": heuristica_euclidea,
@@ -253,8 +340,14 @@ CATALOGO_HEURISTICAS: Dict[str, Callable] = {
 }
 
 
-def _evaluar_heuristica(fn_heuristica: Callable, problema: Any, estado: EstadoSnake) -> float:
-    """Evalúa la función heurística soportando firmas f(s) o f(s, objetivo)."""
+def _evaluar_heuristica(
+    fn_heuristica: Callable, problema: Any, estado: EstadoSnake
+) -> float:
+    """Evalúa una heurística con firma ``f(s)`` o ``f(s, objetivo)``.
+
+    Si la función acepta dos parámetros y el problema tiene objetivo,
+    se le pasa ese objetivo; en otro caso se llama solo con el estado.
+    """
     if fn_heuristica is None:
         return 0.0
     try:
@@ -267,12 +360,19 @@ def _evaluar_heuristica(fn_heuristica: Callable, problema: Any, estado: EstadoSn
 
 
 # =============================================================================
-# 3. ESTRUCTURAS DE TRAZA Y MÉTRICAS (PARA ANIMACIÓN PASO A PASO Y TABLAS)
+# 3. Traza y métricas de la búsqueda
 # =============================================================================
+
 
 @dataclass
 class PasoBusqueda:
-    """Fotografía del estado interno del algoritmo en una iteración."""
+    """Estado interno del algoritmo en una iteración.
+
+    Lo usa la interfaz para reproducir la búsqueda paso a paso: celda
+    actual, valores g, h y f, frontera, celdas expandidas y camino
+    parcial.
+    """
+
     iteracion: int
     celda_actual: Celda
     accion_tomada: Optional[str]
@@ -290,7 +390,11 @@ class PasoBusqueda:
 
 @dataclass
 class ResultadoBusqueda:
-    """Resumen completo de métricas y traza de una ejecución de búsqueda."""
+    """Resultado y métricas de una ejecución de búsqueda.
+
+    Se guarda en ``problema.ultimo_resultado`` al terminar la búsqueda.
+    """
+
     algoritmo: str
     heuristica: str
     exito: bool
@@ -318,8 +422,10 @@ def _capturar_paso(
     nodos_frontera: Iterable[Nodo],
     celdas_expandidas: Set[Celda],
 ) -> None:
-    """Guarda el estado interno de la búsqueda para los controles Play/Pause/Paso."""
-    celda_act = nodo.estado.cabeza if hasattr(nodo.estado, "cabeza") else (0, 0)
+    """Agrega a ``traza`` el estado de la búsqueda en esta iteración."""
+    celda_act = (
+        nodo.estado.cabeza if hasattr(nodo.estado, "cabeza") else (0, 0)
+    )
     frontera_coords = [
         n.estado.cabeza for n in nodos_frontera if hasattr(n.estado, "cabeza")
     ]
@@ -354,7 +460,16 @@ def _finalizar_resultado(
     es_optimo: bool,
     traza: List[PasoBusqueda],
 ) -> Optional[Nodo]:
-    """Empaqueta las métricas en el Nodo solución y en problema.ultimo_resultado."""
+    """Registra las métricas finales de una búsqueda.
+
+    Guarda un ``ResultadoBusqueda`` en ``problema.ultimo_resultado`` y,
+    si hubo solución, copia las métricas en el nodo solución.
+
+    Returns
+    -------
+    Nodo or None
+        El nodo solución, o ``None`` si la búsqueda falló.
+    """
     tiempo_ms = (time.perf_counter() - t0) * 1000.0
     if nodo_sol is not None:
         nodo_sol.nodos_generados = nodos_generados
@@ -398,13 +513,21 @@ def _finalizar_resultado(
 
 
 # =============================================================================
-# 4. ALGORITMOS DE BÚSQUEDA EN GRAFO (6 ALGORITMOS PRINCIPALES + BACKTRACKING)
+# 4. Algoritmos de búsqueda en grafo
 # =============================================================================
+#
+# Todos los algoritmos reciben un problema con la interfaz de
+# SubproblemaSnake, devuelven el nodo solución o None y guardan sus
+# métricas en problema.ultimo_resultado. Con guardar_traza=True además
+# registran cada iteración para la animación paso a paso.
+
 
 def anchura(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
-    """
-    1. Método de búsqueda primero en anchura (BFS) en grafo.
-    Óptimo cuando el costo por paso es constante (lambda_riesgo == 0).
+    """Búsqueda primero en anchura (BFS) en grafo.
+
+    Expande por niveles con una cola FIFO y prueba el objetivo al
+    generar cada hijo. Encuentra el camino con menos pasos, que es el de
+    menor costo solo cuando ``lambda_riesgo == 0``.
     """
     t0 = time.perf_counter()
     s0 = problema.estado_inicial
@@ -417,6 +540,7 @@ def anchura(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
     traza: List[PasoBusqueda] = []
     celdas_expandidas: Set[Celda] = set()
 
+    # Caso trivial: el estado inicial ya es objetivo.
     if problema.test_objetivo(raiz.estado):
         if guardar_traza and hasattr(raiz.estado, "cabeza"):
             celdas_expandidas.add(raiz.estado.cabeza)
@@ -425,6 +549,7 @@ def anchura(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
             problema, "BFS", "ninguna", raiz, 1, 0, 1, t0, True, traza
         )
 
+    # Frontera FIFO; un estado se marca como explorado al generarlo.
     frontera: deque[Nodo] = deque([raiz])
     explorados: Set[str] = {cod0}
 
@@ -454,6 +579,7 @@ def anchura(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
             explorados.add(hijo.codigo)
             nodos_generados += 1
 
+            # Prueba temprana del objetivo, al generar el hijo.
             if problema.test_objetivo(hijo.estado):
                 if guardar_traza:
                     if hasattr(hijo.estado, "cabeza"):
@@ -468,6 +594,7 @@ def anchura(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
                         frontera,
                         celdas_expandidas,
                     )
+                # BFS solo garantiza el óptimo con costo unitario.
                 opt = getattr(problema, "lambda_riesgo", 0.0) == 0.0
                 return _finalizar_resultado(
                     problema,
@@ -499,9 +626,11 @@ def anchura(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
 
 
 def profundidad(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
-    """
-    2. Método de búsqueda primero en profundidad (DFS) en grafo.
-    Ciega y no óptima: encuentra caminos largos e irregulares (contraste).
+    """Búsqueda primero en profundidad (DFS) en grafo.
+
+    Usa una pila y sigue cada rama hasta el fondo antes de retroceder.
+    Es completa en grafos finitos pero no óptima: suele encontrar
+    caminos largos e irregulares.
     """
     t0 = time.perf_counter()
     s0 = problema.estado_inicial
@@ -520,6 +649,9 @@ def profundidad(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
     while len(frontera) > 0:
         max_frontera = max(max_frontera, len(frontera))
         nodo = frontera.pop()
+        # Un estado se marca como explorado al sacarlo de la pila, por
+        # lo que se descartan las copias que llegaron antes por otra
+        # rama.
         if nodo.codigo in explorados:
             continue
         explorados.add(nodo.codigo)
@@ -554,6 +686,8 @@ def profundidad(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
                 traza,
             )
 
+        # Se apilan en orden inverso para expandir primero la primera
+        # acción aplicable.
         acciones = problema.acciones_aplicables(nodo.estado)
         for a in reversed(acciones):
             hijo = nodo_hijo(problema, nodo, a)
@@ -577,7 +711,11 @@ def profundidad(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
 
 
 def backtracking(problema: Any, nodo: Optional[Nodo] = None) -> Optional[Nodo]:
-    """Método de búsqueda backtracking recursivo de los talleres."""
+    """Búsqueda por backtracking recursivo.
+
+    Recorre las ramas en profundidad evitando ciclos dentro de cada
+    rama. No registra métricas; se conserva como referencia.
+    """
     if nodo is None:
         s0 = problema.estado_inicial
         nodo = Nodo(s0, None, None, 0.0, problema.codigo(s0))
@@ -594,9 +732,10 @@ def backtracking(problema: Any, nodo: Optional[Nodo] = None) -> Optional[Nodo]:
 
 
 def dijkstra(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
-    """
-    3. Búsqueda de Costo Uniforme (UCS / Dijkstra) de busqueda_2.py.
-    Minimiza la pérdida acumulada g(n) = costo_camino. Es siempre óptima.
+    """Búsqueda de costo uniforme (UCS, Dijkstra) en grafo.
+
+    Expande siempre el nodo de menor costo acumulado g(n). Es completa y
+    óptima para cualquier costo por paso positivo.
     """
     t0 = time.perf_counter()
     s = problema.estado_inicial
@@ -617,6 +756,8 @@ def dijkstra(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
         max_frontera = max(max_frontera, len(frontera))
         nodo = frontera.pop()
 
+        # Se descartan copias obsoletas: ya se encontró un camino más
+        # barato a este estado.
         if nodo.costo_camino > explorados.get(nodo.codigo, math.inf) + 1e-9:
             continue
 
@@ -636,6 +777,8 @@ def dijkstra(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
                 celdas_expandidas,
             )
 
+        # La prueba del objetivo se hace al expandir para garantizar el
+        # óptimo.
         if problema.test_objetivo(nodo.estado):
             return _finalizar_resultado(
                 problema,
@@ -655,6 +798,7 @@ def dijkstra(problema: Any, guardar_traza: bool = False) -> Optional[Nodo]:
             cod = hijo.codigo
             c = hijo.costo_camino
             hijo.valor_f = c
+            # Solo se agrega si el estado es nuevo o el camino es mejor.
             if (cod not in explorados) or (c + 1e-9 < explorados[cod]):
                 explorados[cod] = c
                 nodos_generados += 1
@@ -680,20 +824,34 @@ def avara(
     heuristica: Optional[Callable] = None,
     guardar_traza: bool = False,
 ) -> Optional[Nodo]:
-    """
-    4. Búsqueda Avara (Greedy Best-First) de busqueda.py (Taller 10).
-    Expande guiándose únicamente por la pérdida futura estimada f(n) = h(n).
+    """Búsqueda avara (greedy best-first) en grafo.
+
+    Expande el nodo con menor h(n), sin tener en cuenta el costo ya
+    recorrido. Es rápida pero no garantiza el camino óptimo.
+
+    Parameters
+    ----------
+    problema : SubproblemaSnake
+        Problema a resolver.
+    heuristica : callable, optional
+        Función h(s) o h(s, objetivo). Por defecto, la del problema o la
+        distancia Manhattan.
+    guardar_traza : bool
+        Si se registra cada iteración.
     """
     t0 = time.perf_counter()
     if heuristica is None:
         heuristica = getattr(problema, "heuristica", heuristica_manhattan)
-    nombre_h = getattr(heuristica, "__name__", "manhattan").replace("heuristica_", "")
+    nombre_h = getattr(heuristica, "__name__", "manhattan").replace(
+        "heuristica_", ""
+    )
 
     s = problema.estado_inicial
     cod = problema.codigo(s)
     v = _evaluar_heuristica(heuristica, problema, s)
     nodo = Nodo(s, None, None, 0.0, cod, heuristica=v, valor_f=v)
 
+    # Frontera ordenada por h(n); un estado se marca al generarlo.
     frontera = ListaPrioritaria()
     frontera.push(nodo, v)
     explorados: Set[str] = {cod}
@@ -767,15 +925,27 @@ def a_estrella(
     heuristica: Optional[Callable] = None,
     guardar_traza: bool = False,
 ) -> Optional[Nodo]:
-    """
-    5. Algoritmo A* (A-Estrella) en grafo.
-    Minimiza la pérdida total esperada f(n) = g(n) + h(n).
-    Es completo y óptimo cuando h(n) es admisible (manhattan o euclidea).
+    """Búsqueda A* en grafo.
+
+    Expande el nodo con menor f(n) = g(n) + h(n). Es completa y óptima
+    cuando h es admisible, como la distancia Manhattan o la euclídea.
+
+    Parameters
+    ----------
+    problema : SubproblemaSnake
+        Problema a resolver.
+    heuristica : callable, optional
+        Función h(s) o h(s, objetivo). Por defecto, la del problema o la
+        distancia Manhattan.
+    guardar_traza : bool
+        Si se registra cada iteración.
     """
     t0 = time.perf_counter()
     if heuristica is None:
         heuristica = getattr(problema, "heuristica", heuristica_manhattan)
-    nombre_h = getattr(heuristica, "__name__", "manhattan").replace("heuristica_", "")
+    nombre_h = getattr(heuristica, "__name__", "manhattan").replace(
+        "heuristica_", ""
+    )
 
     s = problema.estado_inicial
     cod = problema.codigo(s)
@@ -796,6 +966,8 @@ def a_estrella(
         max_frontera = max(max_frontera, len(frontera))
         nodo = frontera.pop()
 
+        # Se descartan copias obsoletas con un g(n) peor que el
+        # conocido.
         if nodo.costo_camino > explorados.get(nodo.codigo, math.inf) + 1e-9:
             continue
 
@@ -816,6 +988,8 @@ def a_estrella(
             )
 
         if problema.test_objetivo(nodo.estado):
+            # El óptimo solo está garantizado con heurísticas
+            # admisibles.
             es_opt = nombre_h in ("manhattan", "euclidea", "heuristica")
             return _finalizar_resultado(
                 problema,
@@ -834,6 +1008,7 @@ def a_estrella(
             hijo = nodo_hijo(problema, nodo, a)
             cod = hijo.codigo
             g = hijo.costo_camino
+            # Solo se agrega si el estado es nuevo o el camino es mejor.
             if (cod not in explorados) or (g + 1e-9 < explorados[cod]):
                 explorados[cod] = g
                 h = _evaluar_heuristica(heuristica, problema, hijo.estado)
@@ -864,15 +1039,30 @@ def busqueda_haz(
     k: int = 3,
     guardar_traza: bool = False,
 ) -> Optional[Nodo]:
-    """
-    6. Búsqueda en Haz (Beam Search con ancho de haz k).
-    Mantiene en memoria únicamente los k mejores nodos según f(n) = g(n) + h(n).
-    Permite analizar el compromiso entre memoria acotada y completitud/optimalidad.
+    """Búsqueda en haz (beam search) con ancho ``k``.
+
+    Funciona como A*, pero en cada iteración conserva solo los ``k``
+    mejores nodos de la frontera según f(n) = g(n) + h(n). Usa memoria
+    acotada a cambio de perder completitud y optimalidad.
+
+    Parameters
+    ----------
+    problema : SubproblemaSnake
+        Problema a resolver.
+    heuristica : callable, optional
+        Función h(s) o h(s, objetivo). Por defecto, la del problema o la
+        distancia Manhattan.
+    k : int
+        Ancho del haz.
+    guardar_traza : bool
+        Si se registra cada iteración.
     """
     t0 = time.perf_counter()
     if heuristica is None:
         heuristica = getattr(problema, "heuristica", heuristica_manhattan)
-    nombre_h = getattr(heuristica, "__name__", "manhattan").replace("heuristica_", "")
+    nombre_h = getattr(heuristica, "__name__", "manhattan").replace(
+        "heuristica_", ""
+    )
     nombre_alg = f"Beam(k={k})"
 
     s = problema.estado_inicial
@@ -890,6 +1080,8 @@ def busqueda_haz(
     max_frontera = 1
 
     while len(frontera) > 0:
+        # Se ordena por f(n), desempatando por h(n), y se corta a k
+        # nodos.
         frontera.sort(key=lambda n: (n.valor_f, n.heuristica))
         if len(frontera) > k:
             frontera = frontera[:k]
@@ -939,7 +1131,7 @@ def busqueda_haz(
                 nodos_generados += 1
                 frontera.append(hijo)
 
-        # Podamos inmediatamente la frontera a un máximo de k elementos
+        # Poda inmediata de la frontera a los k mejores nodos.
         if len(frontera) > k:
             frontera.sort(key=lambda n: (n.valor_f, n.heuristica))
             frontera = frontera[:k]
@@ -958,15 +1150,16 @@ def busqueda_haz(
     )
 
 
-# Alias en inglés/estándar por si algún script los invoca con otro nombre
+# Nombres alternativos de los algoritmos.
 costo_uniforme = dijkstra
 A_star = a_estrella
 beam_search = busqueda_haz
 
 
 # =============================================================================
-# 5. DESPACHADOR UNIFICADO Y COMPARADOR SOBRE UNA MISMA INSTANCIA
+# 5. Ejecución por nombre y comparación sobre una instancia
 # =============================================================================
+
 
 def resolver_subproblema(
     problema: SubproblemaSnake,
@@ -975,12 +1168,36 @@ def resolver_subproblema(
     k_haz: int = 3,
     guardar_traza: bool = False,
 ) -> ResultadoBusqueda:
-    """
-    Ejecuta el algoritmo indicado sobre 'problema' y retorna su ResultadoBusqueda
-    con todas las métricas exigidas en la guía oficial.
+    """Ejecuta un algoritmo elegido por nombre y devuelve su resultado.
+
+    Parameters
+    ----------
+    problema : SubproblemaSnake
+        Problema a resolver.
+    algoritmo : str
+        ``"BFS"``, ``"DFS"``, ``"UCS"``, ``"Avara"``, ``"A*"`` o
+        ``"Beam"``, sin distinguir mayúsculas.
+    heuristica : str
+        Clave de ``CATALOGO_HEURISTICAS``.
+    k_haz : int
+        Ancho del haz para la búsqueda en haz.
+    guardar_traza : bool
+        Si se registra cada iteración.
+
+    Returns
+    -------
+    ResultadoBusqueda
+        Resultado con todas las métricas de la ejecución.
+
+    Raises
+    ------
+    ValueError
+        Si el algoritmo no existe.
     """
     alg = algoritmo.upper().strip()
-    fn_h = CATALOGO_HEURISTICAS.get(heuristica.lower().strip(), heuristica_manhattan)
+    fn_h = CATALOGO_HEURISTICAS.get(
+        heuristica.lower().strip(), heuristica_manhattan
+    )
 
     if alg in ("BFS", "ANCHURA"):
         anchura(problema, guardar_traza=guardar_traza)
@@ -993,7 +1210,9 @@ def resolver_subproblema(
     elif alg in ("A*", "A_ESTRELLA", "ASTAR"):
         a_estrella(problema, heuristica=fn_h, guardar_traza=guardar_traza)
     elif alg.startswith("BEAM") or alg.startswith("HAZ"):
-        busqueda_haz(problema, heuristica=fn_h, k=k_haz, guardar_traza=guardar_traza)
+        busqueda_haz(
+            problema, heuristica=fn_h, k=k_haz, guardar_traza=guardar_traza
+        )
     else:
         raise ValueError(f"Algoritmo '{algoritmo}' no soportado.")
 
@@ -1005,9 +1224,16 @@ def comparar_algoritmos_en_instancia(
     lambda_riesgo: float = 0.0,
     k_haz: int = 3,
 ) -> List[ResultadoBusqueda]:
-    """
-    Ejecuta los 6 algoritmos y las distintas heurísticas sobre el mismo EstadoSnake,
-    verificando empíricamente si la solución hallada alcanza el costo óptimo.
+    """Compara los seis algoritmos sobre un mismo estado.
+
+    Ejecuta cada algoritmo con cada heurística aplicable y marca en
+    ``es_optimo`` si su costo coincide con el costo óptimo, tomado de
+    UCS y de A* con distancia Manhattan.
+
+    Returns
+    -------
+    list of ResultadoBusqueda
+        Un resultado por configuración.
     """
     configuraciones = [
         ("BFS", "ninguna"),
@@ -1024,22 +1250,32 @@ def comparar_algoritmos_en_instancia(
 
     resultados: List[ResultadoBusqueda] = []
     for alg, heur in configuraciones:
-        prob = SubproblemaSnake(estado_inicial=estado, lambda_riesgo=lambda_riesgo)
+        prob = SubproblemaSnake(
+            estado_inicial=estado, lambda_riesgo=lambda_riesgo
+        )
         res = resolver_subproblema(
-            prob, algoritmo=alg, heuristica=heur, k_haz=k_haz, guardar_traza=False
+            prob,
+            algoritmo=alg,
+            heuristica=heur,
+            k_haz=k_haz,
+            guardar_traza=False,
         )
         resultados.append(res)
 
-    # Costo óptimo de referencia garantizado por UCS y A*(manhattan)
+    # Costo óptimo de referencia, garantizado por UCS y por A* con h_1.
     costos_opt = [
         r.costo_total
         for r in resultados
-        if r.exito and r.algoritmo in ("UCS", "A*") and r.heuristica in ("ninguna", "manhattan")
+        if r.exito
+        and r.algoritmo in ("UCS", "A*")
+        and r.heuristica in ("ninguna", "manhattan")
     ]
     costo_minimo = min(costos_opt) if costos_opt else math.inf
 
     for r in resultados:
-        if r.exito and math.isclose(r.costo_total, costo_minimo, rel_tol=1e-6, abs_tol=1e-6):
+        if r.exito and math.isclose(
+            r.costo_total, costo_minimo, rel_tol=1e-6, abs_tol=1e-6
+        ):
             r.es_optimo = True
         else:
             r.es_optimo = False

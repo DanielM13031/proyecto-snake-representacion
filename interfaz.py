@@ -1,30 +1,35 @@
-"""
-Módulo interfaz.py
-SnakeLab Studio: aplicación gráfica que se abre como una página aparte.
+"""SnakeLab Studio: aplicación gráfica del proyecto.
 
 Arquitectura:
-- Este módulo levanta un servidor HTTP pequeño (solo librería estándar) dentro
-  del kernel del notebook. Sirve la página de la carpeta ``web/`` y expone una
-  API JSON que llama directamente a ambientes.py, busqueda.py y agentes.py.
-- La página (web/index.html, web/app.js, web/estilos.css) dibuja el tablero en
-  un canvas y anima en el navegador las trazas que devuelve la API.
 
-Uso desde el notebook:
+- Este módulo inicia un servidor HTTP pequeño, solo con la librería
+  estándar, dentro del kernel del notebook. Sirve la página de la
+  carpeta ``web/`` y expone una API JSON que llama directamente a
+  ``ambientes.py``, ``busqueda.py`` y ``agentes.py``.
+- La página, formada por ``web/index.html``, ``web/app.js`` y
+  ``web/estilos.css``, dibuja el tablero en un canvas y anima en el
+  navegador las trazas que devuelve la API.
+
+Uso desde el notebook::
+
     from interfaz import lanzar_aplicacion_snake
-    lanzar_aplicacion_snake()        # en Colab abre un enlace a otra pestaña
+    lanzar_aplicacion_snake()  # En Colab muestra un enlace a otra
+    pestaña.
 
-Endpoints:
-    POST /api/instancia   genera una instancia aleatoria (tamaño, longitud, muros, semilla)
-    POST /api/buscar      corre un algoritmo sobre una instancia y devuelve la traza paso a paso
-    POST /api/comparar    corre todos los algoritmos sobre la misma instancia
-    POST /api/partida     simula una partida completa con AgenteSnake
-    POST /api/jugar/*     modo manual: humano contra la IA, paso a paso
-    GET  /api/benchmark   resumen del CSV de 100 semillas (si existe)
+Rutas de la API:
+
+- ``POST /api/instancia``: genera una instancia aleatoria.
+- ``POST /api/buscar``: ejecuta un algoritmo y devuelve su traza.
+- ``POST /api/comparar``: ejecuta todos los algoritmos en una instancia.
+- ``POST /api/partida``: simula una partida completa de AgenteSnake.
+- ``POST /api/jugar/*``: modo manual, humano contra la IA.
+- ``GET /api/benchmark``: resumen del CSV de 100 semillas, si existe.
 """
 
 import json
 import math
 import socket
+import sys as _sys
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,7 +53,8 @@ CARPETA_MODULO = Path(__file__).resolve().parent
 CARPETA_WEB = CARPETA_MODULO / "web"
 RUTA_CSV = CARPETA_MODULO / "resultados_benchmark_100_semillas.csv"
 
-# Mismas configuraciones que comparar_algoritmos_en_instancia (busqueda.py)
+# Mismas configuraciones que comparar_algoritmos_en_instancia en
+# busqueda.py.
 CONFIGS_COMPARACION = [
     ("BFS", "ninguna"),
     ("DFS", "ninguna"),
@@ -62,6 +68,7 @@ CONFIGS_COMPARACION = [
     ("Beam", "manhattan"),
 ]
 
+# Código numérico de cada modo de decisión del agente, para la página.
 MODOS_DECISION = {
     "ruta_fruta": 0,
     "evasion_cola (ruta insegura)": 1,
@@ -70,11 +77,15 @@ MODOS_DECISION = {
 
 
 # =============================================================================
-# CONVERSIÓN ENTRE JSON Y EstadoSnake
+# Conversión entre JSON y EstadoSnake
 # =============================================================================
 
+
 def _limpiar(obj: Any) -> Any:
-    """Convierte tuplas, tipos de numpy e infinitos a algo que JSON.parse acepte."""
+    """Convierte tuplas, tipos de numpy e infinitos a valores JSON.
+
+    Recorre diccionarios y listas de forma recursiva.
+    """
     if isinstance(obj, dict):
         return {str(k): _limpiar(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -83,17 +94,23 @@ def _limpiar(obj: Any) -> Any:
         return int(obj)
     if isinstance(obj, (np.floating, float)):
         valor = float(obj)
-        return None if (math.isinf(valor) or math.isnan(valor)) else round(valor, 4)
+        return (
+            None
+            if (math.isinf(valor) or math.isnan(valor))
+            else round(valor, 4)
+        )
     if isinstance(obj, np.bool_):
         return bool(obj)
     return obj
 
 
 def _celda(c) -> Celda:
+    """Convierte una lista ``[x, y]`` en una celda de enteros."""
     return (int(c[0]), int(c[1]))
 
 
 def _estado_desde_json(d: Dict[str, Any]) -> EstadoSnake:
+    """Construye un ``EstadoSnake`` a partir del JSON de la página."""
     return EstadoSnake(
         cuerpo=tuple(_celda(c) for c in d["cuerpo"]),
         fruta=_celda(d["fruta"]) if d.get("fruta") is not None else None,
@@ -104,6 +121,7 @@ def _estado_desde_json(d: Dict[str, Any]) -> EstadoSnake:
 
 
 def _estado_a_json(e: EstadoSnake) -> Dict[str, Any]:
+    """Convierte un ``EstadoSnake`` al formato JSON de la página."""
     return {
         "N": e.tamano,
         "cuerpo": [list(c) for c in e.cuerpo],
@@ -115,6 +133,7 @@ def _estado_a_json(e: EstadoSnake) -> Dict[str, Any]:
 
 
 def _vecinos(c: Celda, n: int, toroidal: bool) -> List[Celda]:
+    """Devuelve las celdas vecinas de ``c`` dentro del tablero."""
     res = []
     for acc in ("norte", "sur", "este", "oeste"):
         v = mover_coordenada(c, acc, n, toroidal)
@@ -126,9 +145,11 @@ def _vecinos(c: Celda, n: int, toroidal: bool) -> List[Celda]:
 def _instancia_aleatoria(
     n: int, longitud: int, n_muros: int, semilla: int, toroidal: bool
 ) -> EstadoSnake:
-    """
-    Genera una instancia válida: cuerpo como camino autoevitante desde la cabeza,
-    muros en celdas libres (no pegados a la cabeza) y una fruta en una celda libre.
+    """Genera una instancia aleatoria válida.
+
+    El cuerpo es un camino autoevitante desde la cabeza, los muros caen
+    en celdas libres que no tocan la cabeza y la fruta en una celda
+    libre.
     """
     rng = np.random.default_rng(semilla)
     longitud = max(1, min(longitud, n * n // 2))
@@ -137,7 +158,9 @@ def _instancia_aleatoria(
         cuerpo = [cabeza]
         usadas = {cabeza}
         while len(cuerpo) < longitud:
-            opciones = [v for v in _vecinos(cuerpo[-1], n, toroidal) if v not in usadas]
+            opciones = [
+                v for v in _vecinos(cuerpo[-1], n, toroidal) if v not in usadas
+            ]
             if not opciones:
                 break
             sig = opciones[int(rng.integers(0, len(opciones)))]
@@ -169,14 +192,18 @@ def _instancia_aleatoria(
         )
         if obtener_acciones_aplicables(estado):
             return estado
-    raise ValueError("No se pudo generar una instancia válida con esos parámetros.")
+    raise ValueError(
+        "No se pudo generar una instancia válida con esos parámetros."
+    )
 
 
 # =============================================================================
-# SERVICIOS DE LA API
+# Servicios de la API
 # =============================================================================
+
 
 def api_instancia(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Genera una instancia con el tamaño, longitud y muros pedidos."""
     estado = _instancia_aleatoria(
         n=int(d.get("N", 10)),
         longitud=int(d.get("longitud", 1)),
@@ -188,7 +215,7 @@ def api_instancia(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def api_buscar(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Corre un algoritmo con traza y devuelve la animación completa."""
+    """Ejecuta un algoritmo con traza y devuelve la animación."""
     estado = _estado_desde_json(d["estado"])
     lam = float(d.get("lambda", 0.0))
     prob = SubproblemaSnake(estado_inicial=estado, lambda_riesgo=lam)
@@ -219,7 +246,7 @@ def api_buscar(d: Dict[str, Any]) -> Dict[str, Any]:
         for p in res.traza
     ]
 
-    # Secuencia de cuerpos al ejecutar la solución (animación del camino final)
+    # Cuerpos sucesivos al ejecutar la solución, para animar el camino.
     cuerpos = [list(estado.cuerpo)]
     seguro = None
     if res.exito:
@@ -253,19 +280,23 @@ def api_buscar(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def api_comparar(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Ejecuta los 10 algoritmos/heurísticas sobre la misma instancia."""
+    """Ejecuta las 10 combinaciones de algoritmo y heurística."""
     estado = _estado_desde_json(d["estado"])
     lam = float(d.get("lambda", 0.0))
     k = int(d.get("k", 3))
 
-    # Métricas limpias (sin el costo de guardar la traza)
-    resultados = comparar_algoritmos_en_instancia(estado, lambda_riesgo=lam, k_haz=k)
+    # Métricas sin el costo extra de guardar la traza.
+    resultados = comparar_algoritmos_en_instancia(
+        estado, lambda_riesgo=lam, k_haz=k
+    )
 
     filas = []
     for (alg, heur), res in zip(CONFIGS_COMPARACION, resultados):
-        # Segunda corrida solo para dibujar qué celdas exploró cada algoritmo
+        # Segunda ejecución, solo para dibujar las celdas exploradas.
         prob = SubproblemaSnake(estado_inicial=estado, lambda_riesgo=lam)
-        res_traza = resolver_subproblema(prob, alg, heur, k_haz=k, guardar_traza=True)
+        res_traza = resolver_subproblema(
+            prob, alg, heur, k_haz=k, guardar_traza=True
+        )
         ultimo = res_traza.traza[-1] if res_traza.traza else None
         filas.append(
             {
@@ -288,7 +319,10 @@ def api_comparar(d: Dict[str, Any]) -> Dict[str, Any]:
     return _limpiar({"filas": filas})
 
 
-def _plan_a_celdas(inicio: Celda, acciones: List[str], n: int, toroidal: bool) -> List[Celda]:
+def _plan_a_celdas(
+    inicio: Celda, acciones: List[str], n: int, toroidal: bool
+) -> List[Celda]:
+    """Devuelve las celdas que recorre la cabeza con ``acciones``."""
     celdas, actual = [], inicio
     for a in acciones:
         actual = mover_coordenada(actual, a, n, toroidal)
@@ -299,10 +333,11 @@ def _plan_a_celdas(inicio: Celda, acciones: List[str], n: int, toroidal: bool) -
 
 
 def api_partida(d: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Simula una partida completa con AgenteSnake.
-    Para no mandar el cuerpo completo en cada turno, se envía la cabeza y si comió:
-    el navegador reconstruye el cuerpo con la misma regla de transición T.
+    """Simula una partida completa de ``AgenteSnake``.
+
+    Para no enviar el cuerpo completo en cada turno, se envía la cabeza
+    y si comió; el navegador reconstruye el cuerpo con la misma regla de
+    transición T.
     """
     n = int(d.get("N", 10))
     semilla = int(d.get("semilla", 0))
@@ -339,8 +374,12 @@ def api_partida(d: Dict[str, Any]) -> Dict[str, Any]:
         accion = agente.make_decision()
         decidio = len(agente.historial_decisiones) > n_dec
         if decidio:
-            modo_actual = MODOS_DECISION.get(agente.historial_decisiones[-1]["modo"], 0)
-        plan = _plan_a_celdas(estado.cabeza, [accion] + list(agente.plan), n, toroidal)
+            modo_actual = MODOS_DECISION.get(
+                agente.historial_decisiones[-1]["modo"], 0
+            )
+        plan = _plan_a_celdas(
+            estado.cabeza, [accion] + list(agente.plan), n, toroidal
+        )
         L_antes = estado.longitud
 
         estado, recompensa, _ = env.step(accion)
@@ -361,7 +400,9 @@ def api_partida(d: Dict[str, Any]) -> Dict[str, Any]:
 
     hist = agente.historial_decisiones
     resumen = {
-        "causa_fin": env.causa_fin if env.done else f"Corte en {max_pasos} pasos",
+        "causa_fin": (
+            env.causa_fin if env.done else f"Corte en {max_pasos} pasos"
+        ),
         "victoria": env.test_objetivo(env.estado),
         "longitud": env.estado.longitud,
         "frutas": env.frutas_comidas,
@@ -371,21 +412,34 @@ def api_partida(d: Dict[str, Any]) -> Dict[str, Any]:
         "G": env.ganancia_total - env.perdida_total,
         "decisiones": len(hist),
         "evasiones": agente.pasos_siguiendo_cola,
-        "gen_prom": float(np.mean([h["nodos_generados"] for h in hist])) if hist else 0.0,
-        "exp_prom": float(np.mean([h["nodos_expandidos"] for h in hist])) if hist else 0.0,
-        "tiempo_prom_ms": float(np.mean([h["tiempo_ms"] for h in hist])) if hist else 0.0,
+        "gen_prom": (
+            float(np.mean([h["nodos_generados"] for h in hist]))
+            if hist
+            else 0.0
+        ),
+        "exp_prom": (
+            float(np.mean([h["nodos_expandidos"] for h in hist]))
+            if hist
+            else 0.0
+        ),
+        "tiempo_prom_ms": (
+            float(np.mean([h["tiempo_ms"] for h in hist])) if hist else 0.0
+        ),
         "meta": n * n - len(estado.obstaculos),
     }
     return _limpiar({"inicial": inicial, "turnos": turnos, "resumen": resumen})
 
 
-# ---------- Modo manual (humano contra la IA) ----------
+# ---------- Modo manual: humano contra la IA ----------
 
+# Partidas manuales activas por identificador, protegidas por un candado
+# porque el servidor atiende peticiones en varios hilos.
 _SESIONES: Dict[str, Dict[str, Any]] = {}
 _CANDADO = threading.Lock()
 
 
 def _foto_juego(env: Snake, G: float) -> Dict[str, Any]:
+    """Resume el estado de una partida manual para la página."""
     return {
         "estado": _estado_a_json(env.estado),
         "longitud": env.estado.longitud,
@@ -399,6 +453,7 @@ def _foto_juego(env: Snake, G: float) -> Dict[str, Any]:
 
 
 def _respuesta_juego(sid: str) -> Dict[str, Any]:
+    """Devuelve el estado del humano y de la IA en la sesión ``sid``."""
     s = _SESIONES[sid]
     return _limpiar(
         {
@@ -411,6 +466,11 @@ def _respuesta_juego(sid: str) -> Dict[str, Any]:
 
 
 def api_jugar_nuevo(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Crea una partida manual y la partida paralela de la IA.
+
+    Ambas usan la misma semilla, así que enfrentan los mismos muros y la
+    misma secuencia de frutas.
+    """
     n = int(d.get("N", 10))
     semilla = int(d.get("semilla", 0))
     muros = int(d.get("muros", 0))
@@ -426,6 +486,7 @@ def api_jugar_nuevo(d: Dict[str, Any]) -> Dict[str, Any]:
     env_h.reset(semilla=semilla)
     sid = uuid.uuid4().hex[:10]
     with _CANDADO:
+        # Se limita la memoria borrando las sesiones viejas.
         if len(_SESIONES) > 50:
             _SESIONES.clear()
         _SESIONES[sid] = {
@@ -440,7 +501,7 @@ def api_jugar_nuevo(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def api_jugar_paso(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Un turno: el humano mueve y la IA responde con un movimiento."""
+    """Juega un turno: el humano mueve y la IA responde."""
     sid = d["id"]
     with _CANDADO:
         s = _SESIONES[sid]
@@ -448,12 +509,17 @@ def api_jugar_paso(d: Dict[str, Any]) -> Dict[str, Any]:
             _, r, _ = s["env_h"].step(d["dir"])
             s["G_h"] += r
             env_ia, agente = s["env_ia"], s["agente"]
-            # la IA responde solo si el movimiento del humano fue válido
-            if not env_ia.done and not s["env_h"].causa_fin.startswith("Colisión"):
+            # La IA responde solo si el movimiento del humano fue
+            # válido.
+            if not env_ia.done and not s["env_h"].causa_fin.startswith(
+                "Colisión"
+            ):
                 n_dec = len(agente.historial_decisiones)
                 accion = agente.make_decision()
                 if len(agente.historial_decisiones) > n_dec:
-                    s["ia_modo"] = MODOS_DECISION.get(agente.historial_decisiones[-1]["modo"], 0)
+                    s["ia_modo"] = MODOS_DECISION.get(
+                        agente.historial_decisiones[-1]["modo"], 0
+                    )
                 est, r_ia, _ = env_ia.step(accion)
                 agente.states.append(est)
                 s["G_ia"] += r_ia
@@ -461,7 +527,7 @@ def api_jugar_paso(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def api_jugar_pista(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Camino que A* sugiere desde el estado actual del humano."""
+    """Devuelve el camino que A* sugiere desde el estado del humano."""
     s = _SESIONES[d["id"]]
     estado = s["env_h"].estado
     if s["env_h"].done or estado.fruta is None:
@@ -475,7 +541,7 @@ def api_jugar_pista(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def api_benchmark(_: Dict[str, Any]) -> Dict[str, Any]:
-    """Resumen del benchmark de 100 semillas, agrupado por configuración real (incluye λ)."""
+    """Resume el benchmark de 100 semillas por configuración y λ."""
     if not RUTA_CSV.exists():
         return {"disponible": False}
     import pandas as pd
@@ -498,7 +564,9 @@ def api_benchmark(_: Dict[str, Any]) -> Dict[str, Any]:
         tiempo_ms=("tiempo_decision_ms", "mean"),
         n=("semilla", "count"),
     ).reset_index()
-    return _limpiar({"disponible": True, "filas": res.to_dict(orient="records")})
+    return _limpiar(
+        {"disponible": True, "filas": res.to_dict(orient="records")}
+    )
 
 
 RUTAS_POST = {
@@ -522,14 +590,19 @@ TIPOS = {
 
 
 # =============================================================================
-# SERVIDOR HTTP
+# Servidor HTTP
 # =============================================================================
 
+
 class _Manejador(BaseHTTPRequestHandler):
-    def log_message(self, *args):  # silencia el log en la celda del notebook
+    """Atiende las peticiones de la página: archivos estáticos y API."""
+
+    def log_message(self, *args):
+        """Silencia el registro de peticiones en el notebook."""
         pass
 
     def _enviar(self, codigo: int, cuerpo: bytes, tipo: str) -> None:
+        """Envía una respuesta con el código, cuerpo y tipo dados."""
         self.send_response(codigo)
         self.send_header("Content-Type", tipo)
         self.send_header("Content-Length", str(len(cuerpo)))
@@ -538,20 +611,34 @@ class _Manejador(BaseHTTPRequestHandler):
         self.wfile.write(cuerpo)
 
     def _json(self, codigo: int, datos: Any) -> None:
-        self._enviar(codigo, json.dumps(datos, ensure_ascii=False).encode("utf-8"),
-                     "application/json; charset=utf-8")
+        """Envía ``datos`` como JSON."""
+        self._enviar(
+            codigo,
+            json.dumps(datos, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
 
     def do_GET(self):
+        """Sirve un archivo de ``web/`` o una ruta GET de la API."""
         ruta = self.path.split("?")[0]
         if ruta.startswith("/api/"):
             return self._atender_api(ruta, {})
         nombre = "index.html" if ruta in ("", "/") else ruta.lstrip("/")
         archivo = (CARPETA_WEB / nombre).resolve()
-        if CARPETA_WEB.resolve() not in archivo.parents or not archivo.is_file():
+        # Solo se sirven archivos dentro de web/, nunca fuera de ella.
+        if (
+            CARPETA_WEB.resolve() not in archivo.parents
+            or not archivo.is_file()
+        ):
             return self._enviar(404, b"No encontrado", "text/plain")
-        self._enviar(200, archivo.read_bytes(), TIPOS.get(archivo.suffix, "application/octet-stream"))
+        self._enviar(
+            200,
+            archivo.read_bytes(),
+            TIPOS.get(archivo.suffix, "application/octet-stream"),
+        )
 
     def do_POST(self):
+        """Lee el cuerpo JSON y lo pasa a la ruta de la API."""
         largo = int(self.headers.get("Content-Length", 0))
         try:
             datos = json.loads(self.rfile.read(largo) or b"{}")
@@ -560,21 +647,23 @@ class _Manejador(BaseHTTPRequestHandler):
         self._atender_api(self.path.split("?")[0], datos)
 
     def _atender_api(self, ruta: str, datos: Dict[str, Any]) -> None:
+        """Ejecuta el servicio de ``ruta`` y responde su resultado."""
         funcion = RUTAS_POST.get(ruta)
         if funcion is None:
             return self._json(404, {"error": f"Ruta {ruta} no existe"})
         try:
             self._json(200, funcion(datos))
-        except Exception as e:  # el error se muestra en la página
+        except Exception as e:  # El error se muestra en la página.
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
 
 
-# El servidor se guarda en ``sys`` y no en este módulo: así, si el notebook hace
-# importlib.reload(interfaz), se apaga el servidor viejo y el nuevo usa el código actualizado.
-import sys as _sys
+# El servidor se guarda en ``sys`` y no en este módulo. Así, si el
+# notebook hace importlib.reload(interfaz), se apaga el servidor viejo y
+# el nuevo usa el código actualizado.
 
 
 def _puerto_libre(preferido: int) -> int:
+    """Devuelve el primer puerto libre a partir de ``preferido``."""
     for puerto in range(preferido, preferido + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if s.connect_ex(("127.0.0.1", puerto)) != 0:
@@ -583,9 +672,11 @@ def _puerto_libre(preferido: int) -> int:
 
 
 def iniciar_servidor(puerto: int = 8050) -> int:
-    """
-    Levanta el servidor en un hilo aparte. Si ya había uno de una carga anterior
-    del módulo, lo apaga y reutiliza su puerto (la pestaña abierta sigue sirviendo).
+    """Inicia el servidor en un hilo aparte y devuelve su puerto.
+
+    Si había un servidor de una carga anterior del módulo, lo apaga y
+    reutiliza su puerto, de modo que la pestaña abierta sigue
+    funcionando.
     """
     previo = getattr(_sys, "_snakelab_servidor", None)
     if previo is not None:
@@ -611,11 +702,12 @@ def detener_servidor() -> None:
 
 
 def lanzar_aplicacion_snake(puerto: int = 8050, modo: str = "pestana") -> None:
-    """
-    Abre SnakeLab Studio.
-    - En Google Colab: muestra un enlace que abre la página en otra pestaña
-      (modo="pestana") o la incrusta en la celda (modo="iframe").
-    - En Jupyter/VS Code local: muestra el enlace a http://localhost:<puerto>.
+    """Inicia SnakeLab Studio y muestra cómo abrirlo.
+
+    En Google Colab muestra un enlace que abre la página en otra
+    pestaña, con ``modo="pestana"``, o la incrusta en la celda, con
+    ``modo="iframe"``. En Jupyter o VS Code local muestra el enlace a
+    ``http://localhost:<puerto>``.
     """
     from IPython.display import HTML, display
 
@@ -626,13 +718,18 @@ def lanzar_aplicacion_snake(puerto: int = 8050, modo: str = "pestana") -> None:
         if modo == "iframe":
             output.serve_kernel_port_as_iframe(p, height=900)
         else:
-            output.serve_kernel_port_as_window(p, anchor_text="🐍 Abrir SnakeLab Studio en otra pestaña")
+            output.serve_kernel_port_as_window(
+                p, anchor_text="🐍 Abrir SnakeLab Studio en otra pestaña"
+            )
     except ImportError:
         url = f"http://localhost:{p}"
-        display(HTML(
-            f'<a href="{url}" target="_blank" style="font-size:15px;font-weight:600;'
-            f'color:#16a34a">🐍 Abrir SnakeLab Studio en otra pestaña ({url})</a>'
-        ))
+        display(
+            HTML(
+                f'<a href="{url}" target="_blank" '
+                'style="font-size:15px;font-weight:600;color:#16a34a">'
+                f"🐍 Abrir SnakeLab Studio en otra pestaña ({url})</a>"
+            )
+        )
 
 
 if __name__ == "__main__":

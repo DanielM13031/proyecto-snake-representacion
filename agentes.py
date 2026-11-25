@@ -1,48 +1,55 @@
-"""
-Módulo agentes.py
-Implementa la jerarquía de agentes siguiendo la interfaz de los talleres del curso
-(agentes.py del Taller 10 y agents.py del Taller 9):
-1. Agent: clase base del curso (make_decision, program, restart).
-2. Random: agente aleatorio de línea base.
-3. AgenteSnake: agente basado en objetivos con soporte para los 6 algoritmos de
-   búsqueda, heurísticas, costo de riesgo y chequeo de seguridad (camino a la cola).
-4. AgenteFrutaAdversaria: agente Minimax con poda Alfa-Beta para la variante
-   de fruta adversaria (Sección 5).
+"""Agentes que juegan Snake.
+
+El módulo define la jerarquía de agentes del proyecto:
+
+1. ``Agent``: clase base con el ciclo ``make_decision``, ``program`` y
+   ``restart``.
+2. ``Random``: agente aleatorio que sirve como línea base.
+3. ``AgenteSnake``: agente basado en modelo y en objetivos que resuelve
+   cada fruta como un subproblema de búsqueda y aplica el chequeo de
+   seguridad hacia la cola.
+4. ``AgenteFrutaAdversaria``: agente Minimax con poda alfa-beta para la
+   variante en la que la fruta la coloca un oponente.
 """
 
 import math
 import random
 import time
-from typing import List, Optional, Dict, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 
 from ambientes import (
     Celda,
     EstadoSnake,
-    SubproblemaSnake,
     SnakeJuegoAdversario,
-    obtener_acciones_aplicables,
+    SubproblemaSnake,
     aplicar_transicion,
     calcular_riesgo_celda,
+    obtener_acciones_aplicables,
 )
 from busqueda import (
-    resolver_subproblema,
+    CATALOGO_HEURISTICAS,
     anchura,
     heuristica_manhattan,
-    CATALOGO_HEURISTICAS,
+    resolver_subproblema,
 )
 
+# =============================================================================
+# 1. Clase base y agente aleatorio
+# =============================================================================
 
-# =============================================================================
-# 1. CLASE BASE Agent Y Random (ESTÁNDAR DE LOS TALLERES DEL PROFESOR)
-# =============================================================================
 
 class Agent:
-    """
-    Defines the basic methods for the agent (idéntica a agentes.py de los talleres).
+    """Clase base de los agentes.
+
+    Guarda el historial de estados, acciones y recompensas de una
+    partida y un plan de acciones pendientes. Las subclases solo deben
+    implementar ``program``, que llena el plan cuando se vacía.
     """
 
     def __init__(self):
+        """Inicializa un agente sin plan ni historial."""
         self.plan: List[Any] = []
         self.states: List[Any] = []
         self.actions: List[Any] = []
@@ -51,8 +58,15 @@ class Agent:
         self.turn: int = 0
 
     def make_decision(self) -> Any:
-        """
-        Agent makes a decision according to its model.
+        """Devuelve la siguiente acción del plan.
+
+        Si el plan está vacío, llama a ``program`` para generar uno
+        nuevo.
+
+        Raises
+        ------
+        Exception
+            Si ``program`` no deja ninguna acción en el plan.
         """
         if len(self.plan) == 0:
             self.program()
@@ -65,18 +79,18 @@ class Agent:
         return action
 
     def program(self) -> None:
-        """
-        Debe ser modificada por cada subclase.
+        """Genera un plan para el estado actual.
+
+        Cada subclase debe sobrescribir este método.
         """
         pass
 
     def reset(self) -> None:
+        """Reinicia el agente; es un alias de ``restart``."""
         self.restart()
 
     def restart(self) -> None:
-        """
-        Restarts the agent for a new trial.
-        """
+        """Borra el plan y el historial para una partida nueva."""
         self.plan = []
         self.states = []
         self.actions = []
@@ -86,13 +100,26 @@ class Agent:
 
 
 class Random(Agent):
-    """Agente que selecciona acciones aplicables al azar."""
+    """Agente que elige al azar entre las acciones aplicables."""
 
     def __init__(self, choices: Optional[List[str]] = None):
+        """Crea el agente.
+
+        Parameters
+        ----------
+        choices : list of str, optional
+            Acciones entre las que elegir cuando el estado no es un
+            ``EstadoSnake``. Por defecto, las cuatro direcciones.
+        """
         super().__init__()
-        self.choices = choices if choices is not None else ['norte', 'sur', 'este', 'oeste']
+        self.choices = (
+            choices
+            if choices is not None
+            else ["norte", "sur", "este", "oeste"]
+        )
 
     def program(self) -> None:
+        """Agrega al plan una acción aplicable elegida al azar."""
         if self.states and isinstance(self.states[-1], EstadoSnake):
             aplicables = obtener_acciones_aplicables(self.states[-1])
             if aplicables:
@@ -102,17 +129,35 @@ class Random(Agent):
 
 
 # =============================================================================
-# 2. AGENTE BASADO EN OBJETIVOS PARA SNAKE (SECCIÓN 3 DE LA PROPUESTA)
+# 2. Agente basado en objetivos para Snake
 # =============================================================================
 
+
 class AgenteSnake(Agent):
-    """
-    Agente basado en objetivos que alterna planeación y ejecución por cada fruta.
-    - Resuelve cada subproblema con búsqueda en grafo (BFS, DFS, UCS, Avara, A*, Beam).
-    - Si chequeo_seguridad=True, antes de comprometerse con el camino hacia la fruta,
-      simula el estado final al comer y verifica que exista un camino desde la nueva
-      cabeza hasta la cola c_L. Si no es seguro, da un paso persiguiendo su cola
-      por la ruta que mejor preserve el espacio libre y vuelve a planear.
+    """Agente basado en modelo y en objetivos para Snake.
+
+    Por cada fruta resuelve un subproblema de búsqueda en grafo con el
+    algoritmo elegido (BFS, DFS, UCS, Avara, A* o Beam) y ejecuta el
+    plan encontrado. Con ``chequeo_seguridad=True``, antes de aceptar un
+    plan simula el estado en el que quedaría al comer y verifica que la
+    cabeza todavía pueda llegar a la cola. Si no puede, da un solo paso
+    siguiendo su cola y vuelve a planear.
+
+    Parameters
+    ----------
+    algoritmo : str
+        Nombre del algoritmo de búsqueda, por ejemplo ``"A*"``.
+    heuristica : str
+        Clave de la heurística en ``CATALOGO_HEURISTICAS``.
+    chequeo_seguridad : bool
+        Si se verifica el camino hacia la cola antes de ejecutar un
+        plan.
+    lambda_riesgo : float
+        Peso del riesgo local en el costo por paso.
+    k_haz : int
+        Ancho del haz para la búsqueda en haz.
+    replanear_cada_paso : bool
+        Si se descarta el plan y se vuelve a planear en cada turno.
     """
 
     def __init__(
@@ -124,6 +169,7 @@ class AgenteSnake(Agent):
         k_haz: int = 3,
         replanear_cada_paso: bool = False,
     ):
+        """Crea el agente con la configuración indicada."""
         super().__init__()
         self.algoritmo = algoritmo
         self.heuristica = heuristica
@@ -132,13 +178,14 @@ class AgenteSnake(Agent):
         self.k_haz = k_haz
         self.replanear_cada_paso = replanear_cada_paso
 
-        # Telemetría acumulada por partida (para evaluación experimental)
+        # Métricas acumuladas durante la partida para la evaluación.
         self.historial_decisiones: List[Dict[str, Any]] = []
         self.veces_camino_inseguro: int = 0
         self.pasos_siguiendo_cola: int = 0
         self._fruta_objetivo_actual: Optional[Tuple[Celda, ...]] = None
 
     def restart(self) -> None:
+        """Reinicia el agente y sus métricas para una partida nueva."""
         super().restart()
         self.historial_decisiones = []
         self.veces_camino_inseguro = 0
@@ -146,18 +193,23 @@ class AgenteSnake(Agent):
         self._fruta_objetivo_actual = None
 
     def make_decision(self) -> str:
-        """
-        Si cambió la fruta en el tablero o si replanear_cada_paso=True,
-        limpia el plan actual para forzar una nueva planeación en program().
+        """Devuelve la siguiente acción, replaneando cuando hace falta.
+
+        El plan se descarta si cambiaron las frutas del tablero, si
+        ``replanear_cada_paso`` está activo o si la siguiente acción del
+        plan dejó de ser aplicable.
         """
         if self.states:
             estado_actual: EstadoSnake = self.states[-1]
             frutas_tablero = estado_actual.todas_las_frutas
-            if self.replanear_cada_paso or (frutas_tablero != self._fruta_objetivo_actual):
+            if self.replanear_cada_paso or (
+                frutas_tablero != self._fruta_objetivo_actual
+            ):
                 self.plan = []
                 self._fruta_objetivo_actual = frutas_tablero
 
-            # Verificación defensiva: si la siguiente acción del plan dejó de ser válida
+            # Verificación defensiva: el plan se descarta si su
+            # siguiente acción ya no es aplicable en el estado actual.
             if self.plan:
                 acciones_validas = obtener_acciones_aplicables(estado_actual)
                 if self.plan[0] not in acciones_validas:
@@ -166,12 +218,24 @@ class AgenteSnake(Agent):
         return super().make_decision()
 
     @staticmethod
-    def _tiene_salida_a_cola(estado: EstadoSnake) -> Tuple[bool, int, int, int, int]:
+    def _tiene_salida_a_cola(
+        estado: EstadoSnake,
+    ) -> Tuple[bool, int, int, int, int]:
+        """Verifica con BFS si la cabeza puede llegar a la cola.
+
+        Parameters
+        ----------
+        estado : EstadoSnake
+            Estado en el que se hace la verificación.
+
+        Returns
+        -------
+        tuple
+            ``(es_seguro, distancia_a_cola, nodos_generados,
+            nodos_expandidos, frontera_maxima)``.
         """
-        Verifica mediante BFS en grafo si desde 'estado' existe un camino válido
-        desde la cabeza c_1 hasta la cola c_L (sin comer fruta en el destino).
-        Retorna: (es_seguro, distancia_a_cola, nodos_gen, nodos_exp, max_front).
-        """
+        # Con longitud 1 o 2 la cola está pegada a la cabeza: basta con
+        # tener alguna acción aplicable.
         if estado.longitud <= 2:
             acciones = obtener_acciones_aplicables(estado)
             return (len(acciones) > 0, 1, 1, 0, 1)
@@ -192,22 +256,40 @@ class AgenteSnake(Agent):
                 res.nodos_expandidos,
                 res.max_frontera,
             )
-        return (False, 0, res.nodos_generados, res.nodos_expandidos, res.max_frontera)
+        return (
+            False,
+            0,
+            res.nodos_generados,
+            res.nodos_expandidos,
+            res.max_frontera,
+        )
 
     def _elegir_paso_hacia_cola(
         self, estado: EstadoSnake
     ) -> Tuple[str, int, int, int]:
-        """
-        Maniobra de emergencia cuando el camino a la fruta no existe o no es seguro.
-        Evalúa las acciones aplicables desde 'estado', filtra aquellas desde las cuales
-        la serpiente mantiene un camino válido hacia su propia cola y elige la que
-        MAXIMIZA la distancia hacia la cola (y minimiza el riesgo local) para hacer
-        tiempo y desenrollar el cuerpo sin encerrarse.
+        """Elige un paso de evasión cuando ir a la fruta no es seguro.
+
+        Prueba cada acción aplicable, se queda con las que mantienen un
+        camino hasta la cola y entre ellas prefiere la que deja la cola
+        más lejos, tiene menor riesgo local y se acerca a la fruta. Así
+        la serpiente gana tiempo y desenrolla el cuerpo sin encerrarse.
+
+        Parameters
+        ----------
+        estado : EstadoSnake
+            Estado actual de la serpiente.
+
+        Returns
+        -------
+        tuple
+            ``(accion, nodos_generados, nodos_expandidos,
+            frontera_maxima)``.
         """
         acciones_validas = obtener_acciones_aplicables(estado)
         if not acciones_validas:
-            # Sin acciones aplicables: devuelve cualquier dirección para que el entorno cierre
-            return ('norte', 0, 0, 0)
+            # Sin acciones aplicables se devuelve cualquier dirección
+            # para que el entorno registre el fin de la partida.
+            return ("norte", 0, 0, 0)
 
         total_gen = 0
         total_exp = 0
@@ -217,7 +299,8 @@ class AgenteSnake(Agent):
         candidatas_respaldo: List[Tuple[float, str]] = []
 
         for acc in acciones_validas:
-            # Simulamos dar 1 paso con esta acción
+            # Se simula un paso con la acción y se revisa la salida a
+            # cola.
             est_sig = aplicar_transicion(estado, acc, comer_fruta=True)
             seguro, dist_cola, ng, ne, mf = self._tiene_salida_a_cola(est_sig)
             total_gen += ng
@@ -230,14 +313,15 @@ class AgenteSnake(Agent):
                 if estado.fruta is not None
                 else 0.0
             )
-            # Puntaje para seguimiento de cola: preferimos mayor distancia a la cola
-            # (para no pegarnos a ella de inmediato), menor riesgo local y acercarnos a la fruta
+            # Se prefiere mayor distancia a la cola, para no pegarse a
+            # ella, menor riesgo local y menor distancia a la fruta.
             puntaje = (dist_cola * 10.0) - (riesgo * 3.0) - (dist_fruta * 0.2)
 
             if seguro:
                 candidatas_seguras.append((puntaje, acc))
             else:
-                # Si ninguna mantiene salida a la cola, preferimos la de menor riesgo local
+                # Respaldo por si ninguna acción conserva la salida a la
+                # cola: se ordena solo por menor riesgo local.
                 candidatas_respaldo.append((-riesgo, acc))
 
         if candidatas_seguras:
@@ -248,14 +332,18 @@ class AgenteSnake(Agent):
         return (candidatas_respaldo[0][1], total_gen, total_exp, max_front)
 
     def program(self) -> None:
-        """
-        Genera el plan de acción para el estado actual s = (C, f).
+        """Genera el plan de acciones para el estado actual s = (C, f).
+
+        Busca un camino hasta la fruta. Si existe y, cuando corresponde,
+        pasa el chequeo de seguridad, el plan es el camino completo. En
+        otro caso el plan es un único paso de evasión. Cada decisión
+        queda registrada en ``historial_decisiones``.
         """
         t_inicio = time.perf_counter()
         estado: EstadoSnake = self.states[-1]
         self._fruta_objetivo_actual = estado.todas_las_frutas
 
-        # 1. Búsqueda principal hacia la fruta
+        # 1. Búsqueda principal hacia la fruta.
         prob_fruta = SubproblemaSnake(
             estado_inicial=estado,
             objetivo=estado.fruta,
@@ -277,10 +365,11 @@ class AgenteSnake(Agent):
 
         if res_fruta.exito and len(res_fruta.acciones) > 0:
             if not self.chequeo_seguridad:
-                # Sin chequeo de seguridad: ejecuta todo el camino planeado hacia la fruta
+                # 2a. Sin chequeo se ejecuta todo el camino a la fruta.
                 self.plan = list(res_fruta.acciones)
             else:
-                # Con chequeo de seguridad: simulamos el estado al terminar de comer la fruta
+                # 2b. Con chequeo se simula el estado al comer la fruta
+                # y se verifica que siga habiendo camino hasta la cola.
                 estado_post_fruta = res_fruta.estado_final
                 es_seguro, _, ng_c, ne_c, mf_c = self._tiene_salida_a_cola(
                     estado_post_fruta
@@ -292,17 +381,20 @@ class AgenteSnake(Agent):
                 if es_seguro:
                     self.plan = list(res_fruta.acciones)
                 else:
-                    # El camino directo a la fruta encierra a la serpiente -> seguir la cola 1 paso
+                    # El camino directo encerraría a la serpiente: se da
+                    # un solo paso siguiendo la cola.
                     self.veces_camino_inseguro += 1
                     self.pasos_siguiendo_cola += 1
                     modo_decision = "evasion_cola (ruta insegura)"
-                    acc_cola, ng_e, ne_e, mf_e = self._elegir_paso_hacia_cola(estado)
+                    acc_cola, ng_e, ne_e, mf_e = self._elegir_paso_hacia_cola(
+                        estado
+                    )
                     nodos_gen += ng_e
                     nodos_exp += ne_e
                     max_front = max(max_front, mf_e)
                     self.plan = [acc_cola]
         else:
-            # No se encontró camino hacia la fruta -> avanzar 1 paso siguiendo la cola
+            # 3. No hay camino a la fruta: un paso siguiendo la cola.
             self.pasos_siguiendo_cola += 1
             modo_decision = "evasion_cola (sin camino a fruta)"
             acc_cola, ng_e, ne_e, mf_e = self._elegir_paso_hacia_cola(estado)
@@ -321,33 +413,51 @@ class AgenteSnake(Agent):
                 "nodos_generados": nodos_gen,
                 "nodos_expandidos": nodos_exp,
                 "max_frontera": max_front,
-                "costo_plan": res_fruta.costo_total if res_fruta.exito else np.nan,
-                "longitud_plan": res_fruta.longitud_solucion if res_fruta.exito else 1,
+                "costo_plan": (
+                    res_fruta.costo_total if res_fruta.exito else np.nan
+                ),
+                "longitud_plan": (
+                    res_fruta.longitud_solucion if res_fruta.exito else 1
+                ),
                 "tiempo_ms": tiempo_total_ms,
             }
         )
 
 
 # =============================================================================
-# 3. AGENTE PARA VARIANTE DE FRUTA ADVERSARIA (MINIMAX CON PODA ALFA-BETA)
+# 3. Agente para la variante de fruta adversaria
 # =============================================================================
 
+
 class AgenteFrutaAdversaria(Agent):
-    """
-    Implementa la variante de Fruta Adversaria de la Sección 5 usando Minimax
-    con poda Alfa-Beta y función de evaluación heurística (al estilo de
-    ChessFinalist1 en agents.py del Taller 9).
-    Puede actuar como el oponente 'fruta' (MIN, que coloca la manzana en la peor
-    posición posible para la serpiente) o como 'serpiente' (MAX).
+    """Agente Minimax con poda alfa-beta para la fruta adversaria.
+
+    Puede jugar como ``"fruta"``, el jugador MIN que coloca cada fruta
+    en la peor celda posible para la serpiente, o como ``"serpiente"``,
+    el jugador MAX. La búsqueda se corta a profundidad ``max_lim`` y los
+    estados no terminales se valoran con una función de evaluación.
+
+    Parameters
+    ----------
+    game : SnakeJuegoAdversario
+        Juego bipersonal sobre el que se busca.
+    jugador : str
+        ``"fruta"`` o ``"serpiente"``.
+    max_lim : int
+        Profundidad máxima de la búsqueda.
+    max_candidatas_fruta : int
+        Número máximo de celdas que se evalúan en los turnos de la
+        fruta.
     """
 
     def __init__(
         self,
         game: SnakeJuegoAdversario,
-        jugador: str = 'fruta',
+        jugador: str = "fruta",
         max_lim: int = 3,
         max_candidatas_fruta: int = 12,
     ):
+        """Crea el agente adversario con la configuración indicada."""
         super().__init__()
         self.game = game
         self.jugador = jugador
@@ -357,53 +467,69 @@ class AgenteFrutaAdversaria(Agent):
         self.podas_alfa_beta: int = 0
 
     def program(self) -> None:
+        """Agrega al plan la mejor acción según Minimax alfa-beta."""
         estado: EstadoSnake = self.states[-1]
         _, accion = self._H_minimax_alfa_beta(estado, 0, -math.inf, math.inf)
         if accion is None:
             acciones = self.game.acciones(estado)
-            accion = acciones[0] if acciones else 'norte'
+            accion = acciones[0] if acciones else "norte"
         self.plan.append(accion)
 
     def _acciones_acotadas(self, estado: EstadoSnake) -> List[Any]:
-        """
-        Para que la rama del jugador 'fruta' no evalúe 90 casillas irrelevantes,
-        prioriza las celdas libres más alejadas de la cabeza o más rodeadas por muros/cuerpo.
+        """Devuelve las acciones a explorar, acotadas para la fruta.
+
+        Para no evaluar decenas de celdas irrelevantes, en el turno de
+        la fruta se conservan solo las ``max_candidatas_fruta`` celdas
+        más difíciles para la serpiente: las más lejanas de la cabeza y
+        las más rodeadas por muros o por el cuerpo.
         """
         acciones = self.game.acciones(estado)
-        if estado.turno == 'serpiente' or len(acciones) <= self.max_candidatas_fruta:
+        if (
+            estado.turno == "serpiente"
+            or len(acciones) <= self.max_candidatas_fruta
+        ):
             return acciones
 
         xh, yh = estado.cabeza
         ocupadas = set(estado.cuerpo) | set(estado.obstaculos)
 
         def dificultad_celda(celda: Celda) -> float:
+            """Mide cuánto le cuesta a la serpiente llegar a celda."""
             cx, cy = celda
             dist = abs(xh - cx) + abs(yh - cy)
             vecinos_bloq = 0
             for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
                 nx, ny = cx + dx, cy + dy
-                if not (0 <= nx < estado.tamano and 0 <= ny < estado.tamano) or (nx, ny) in ocupadas:
+                if (
+                    not (0 <= nx < estado.tamano and 0 <= ny < estado.tamano)
+                    or (nx, ny) in ocupadas
+                ):
                     vecinos_bloq += 1
-            # A la fruta adversaria le interesa mucha distancia y muchos vecinos bloqueados
+            # La fruta adversaria prefiere celdas lejanas y encerradas.
             return dist + 3.0 * vecinos_bloq
 
-        acciones_ordenadas = sorted(acciones, key=dificultad_celda, reverse=True)
+        acciones_ordenadas = sorted(
+            acciones, key=dificultad_celda, reverse=True
+        )
         return acciones_ordenadas[: self.max_candidatas_fruta]
 
     def _is_cutoff(self, estado: EstadoSnake, d: int) -> bool:
+        """Indica si la búsqueda debe cortarse en este estado."""
         if self.game.es_terminal(estado):
             return True
         return d >= self.max_lim
 
     def _evaluar(self, estado: EstadoSnake) -> float:
-        """
-        Función de utilidad/evaluación desde la perspectiva de la serpiente (MAX):
-        - Ganancia por longitud alcanzada y por grados de libertad (acciones disponibles).
-        - Pérdida por distancia a la fruta y por riesgo de encierro de la fruta.
+        """Evalúa un estado desde la perspectiva de la serpiente, MAX.
+
+        Premia la longitud y los grados de libertad de la cabeza, y
+        penaliza el riesgo local, la distancia a la fruta y que la fruta
+        esté encerrada. En estados terminales devuelve la utilidad del
+        juego.
         """
         self.nodos_evaluados_minimax += 1
         if self.game.es_terminal(estado):
-            util = self.game.utilidad(estado, 'serpiente')
+            util = self.game.utilidad(estado, "serpiente")
             return float(util) if util is not None else 0.0
 
         libertad_cabeza = len(obtener_acciones_aplicables(estado))
@@ -418,11 +544,14 @@ class AgenteFrutaAdversaria(Agent):
             ocupadas = set(estado.cuerpo) | set(estado.obstaculos)
             for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
                 nx, ny = fx + dx, fy + dy
-                if not (0 <= nx < estado.tamano and 0 <= ny < estado.tamano) or (nx, ny) in ocupadas:
+                if (
+                    not (0 <= nx < estado.tamano and 0 <= ny < estado.tamano)
+                    or (nx, ny) in ocupadas
+                ):
                     encierro_fruta += 1.0
 
-        # Utilidad para MAX (serpiente): quiere alta longitud, alta libertad,
-        # baja distancia a la fruta y fruta en lugares despejados.
+        # MAX quiere longitud y libertad altas, poca distancia a la
+        # fruta y la fruta en una zona despejada.
         utilidad_max = (
             (50.0 * estado.longitud)
             + (8.0 * libertad_cabeza)
@@ -435,8 +564,21 @@ class AgenteFrutaAdversaria(Agent):
     def _H_minimax_alfa_beta(
         self, estado: EstadoSnake, d: int, alfa: float, beta: float
     ) -> Tuple[float, Any]:
-        """
-        Búsqueda H-Minimax con poda Alfa-Beta (misma estructura de agents.py del Taller 9).
+        """Búsqueda H-Minimax con poda alfa-beta.
+
+        Parameters
+        ----------
+        estado : EstadoSnake
+            Estado desde el que se busca.
+        d : int
+            Profundidad actual.
+        alfa, beta : float
+            Cotas de la poda alfa-beta.
+
+        Returns
+        -------
+        tuple
+            ``(valor, mejor_accion)``.
         """
         jugador_turno = self.game.player(estado)
         if self._is_cutoff(estado, d):
@@ -446,7 +588,7 @@ class AgenteFrutaAdversaria(Agent):
         if not acciones:
             return self._evaluar(estado), None
 
-        if jugador_turno == 'serpiente':  # Jugador MAX
+        if jugador_turno == "serpiente":  # Jugador MAX.
             v = -math.inf
             mejor_accion = acciones[0]
             for a in acciones:
@@ -461,7 +603,7 @@ class AgenteFrutaAdversaria(Agent):
                     return v, mejor_accion
             return v, mejor_accion
 
-        elif jugador_turno == 'fruta':  # Jugador MIN (Fruta Adversaria)
+        elif jugador_turno == "fruta":  # Jugador MIN, la fruta adversaria.
             v = math.inf
             mejor_accion = acciones[0]
             for a in acciones:

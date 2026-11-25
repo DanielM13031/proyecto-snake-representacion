@@ -1,85 +1,139 @@
-"""
-Módulo ambientes.py
-Contiene la formulación del entorno Snake y sus variantes siguiendo la
-interfaz de los talleres del curso:
-1. EstadoSnake: representación inmutable s = (C, f).
-2. SubproblemaSnake: espacio de estados para alcanzar una fruta o la cola
-   (compatible con nodo_hijo y los algoritmos de busqueda.py).
-3. Snake: entorno secuencial completo (compatible con Episode y Experiment de utils.py).
-4. SnakeJuegoAdversario: juego bipersonal de suma cero para la variante de
-   fruta adversaria con Minimax y poda Alfa-Beta.
+"""Entorno Snake, su espacio de estados y sus variantes.
+
+El módulo contiene:
+
+1. ``EstadoSnake``: representación inmutable del estado s = (C, f).
+2. ``SubproblemaSnake``: espacio de estados para llevar la cabeza hasta
+   una fruta o hasta la cola. Lo usan los algoritmos de ``busqueda.py``.
+3. ``Snake``: entorno secuencial de la partida completa, con ``reset``,
+   ``step`` y ``render``.
+4. ``SnakeJuegoAdversario``: juego bipersonal de suma cero para la
+   variante en la que un oponente coloca la fruta.
+5. ``dibujar_tablero_snake``: dibujo del tablero con matplotlib.
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict, Set
 from time import sleep
-from IPython.display import clear_output
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+from typing import Dict, List, Optional, Set, Tuple
 
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+import numpy as np
+from IPython.display import clear_output
+
+# Una celda del tablero es una pareja de coordenadas enteras (x, y).
 Celda = Tuple[int, int]
 
-# Direcciones consistentes con Laberinto (ambientes.py) y GoalBased (agentes.py)
+# Vector de desplazamiento delta(a) asociado a cada acción.
 DIRECCIONES: Dict[str, Tuple[int, int]] = {
-    'norte': (0, 1),
-    'sur': (0, -1),
-    'este': (1, 0),
-    'oeste': (-1, 0),
+    "norte": (0, 1),
+    "sur": (0, -1),
+    "este": (1, 0),
+    "oeste": (-1, 0),
 }
 
 
 @dataclass(frozen=True)
 class EstadoSnake:
+    """Estado s = (C, f) de una partida de Snake.
+
+    Es inmutable, de modo que puede usarse como clave de diccionarios y
+    compartirse entre nodos de búsqueda sin copiarlo.
+
+    Attributes
+    ----------
+    cuerpo : tuple of Celda
+        Celdas ordenadas (c_1, ..., c_L); c_1 es la cabeza y c_L la
+        cola.
+    fruta : Celda or None
+        Posición de la fruta principal.
+    tamano : int
+        Lado N del tablero de N x N celdas.
+    toroidal : bool
+        Si el tablero no tiene bordes y las coordenadas se envuelven.
+    obstaculos : tuple of Celda
+        Celdas ocupadas por muros fijos.
+    frutas_extra : tuple of Celda
+        Frutas adicionales en la variante de varias frutas.
+    turno : str
+        ``"serpiente"`` o ``"fruta"``; solo se usa en la variante
+        adversaria.
     """
-    Estado formal s = (C, f) de Snake.
-    - cuerpo: tupla ordenada (c_1, ..., c_L) donde c_1 es la cabeza y c_L la cola.
-    - fruta: coordenada (x, y) de la fruta actual (o tupla de frutas en variante múltiple).
-    - tamano: dimensión N de la cuadrícula N x N (por defecto 10).
-    - toroidal: True si el tablero no tiene bordes (variante toroidal).
-    - obstaculos: tupla de celdas (x, y) con muros fijos.
-    - turno: 'serpiente' o 'fruta' (usado solo en la variante adversaria Minimax).
-    """
+
     cuerpo: Tuple[Celda, ...]
     fruta: Optional[Celda]
     tamano: int = 10
     toroidal: bool = False
     obstaculos: Tuple[Celda, ...] = ()
     frutas_extra: Tuple[Celda, ...] = ()
-    turno: str = 'serpiente'
+    turno: str = "serpiente"
 
     @property
     def cabeza(self) -> Celda:
+        """Celda de la cabeza, c_1."""
         return self.cuerpo[0]
 
     @property
     def cola(self) -> Celda:
+        """Celda de la cola, c_L."""
         return self.cuerpo[-1]
 
     @property
     def longitud(self) -> int:
+        """Longitud L = |C| de la serpiente."""
         return len(self.cuerpo)
 
     @property
     def todas_las_frutas(self) -> Tuple[Celda, ...]:
+        """Tupla con la fruta principal seguida de las frutas extra."""
         if self.fruta is None:
             return self.frutas_extra
         return (self.fruta,) + self.frutas_extra
 
     def __str__(self) -> str:
-        return f"EstadoSnake(cabeza={self.cabeza}, L={self.longitud}, fruta={self.fruta})"
+        """Resumen legible del estado: cabeza, longitud y fruta."""
+        return (
+            f"EstadoSnake(cabeza={self.cabeza}, L={self.longitud}, "
+            f"fruta={self.fruta})"
+        )
 
 
 # =============================================================================
-# FUNCIONES AUXILIARES DE DINÁMICA Y RIESGO (MODELO DE TRANSICIÓN Y PÉRDIDA)
+# Funciones auxiliares de dinámica y riesgo
 # =============================================================================
+
 
 def mover_coordenada(
     celda: Celda, accion: str, tamano: int = 10, toroidal: bool = False
 ) -> Optional[Celda]:
-    """Calcula la nueva celda h' = c_1 + delta(a) según bordes o toroide."""
+    """Calcula la celda a la que llega ``celda`` al aplicar ``accion``.
+
+    Parameters
+    ----------
+    celda : Celda
+        Celda de partida.
+    accion : str
+        Una de las claves de ``DIRECCIONES``.
+    tamano : int
+        Lado del tablero.
+    toroidal : bool
+        Si las coordenadas se envuelven al salir del tablero.
+
+    Returns
+    -------
+    Celda or None
+        La nueva celda h' = c + delta(a), o ``None`` si sale del tablero
+        en el modo con bordes.
+
+    Raises
+    ------
+    ValueError
+        Si ``accion`` no es una dirección válida.
+    """
     if accion not in DIRECCIONES:
-        raise ValueError(f"Acción inválida: {accion}. Use {list(DIRECCIONES.keys())}")
+        raise ValueError(
+            f"Acción inválida: {accion}. Use {list(DIRECCIONES.keys())}"
+        )
     dx, dy = DIRECCIONES[accion]
     nx, ny = celda[0] + dx, celda[1] + dy
     if toroidal:
@@ -90,16 +144,18 @@ def mover_coordenada(
 
 
 def obtener_acciones_aplicables(estado: EstadoSnake) -> List[str]:
-    """
-    Determina las acciones aplicables en el estado s = (C, f).
-    - No puede salir del tablero (salvo modo toroidal) ni chocar con obstáculos.
-    - Para L >= 2 se excluye el giro de 180 grados (ir hacia c_2).
-    - La celda de la cola c_L sí es válida porque se desplaza en el mismo turno.
+    """Devuelve las acciones aplicables en el estado s = (C, f).
+
+    Una acción es aplicable si la nueva cabeza no sale del tablero,
+    salvo en el modo toroidal, y no choca con un obstáculo ni con el
+    cuerpo. Para L >= 2 se excluye el giro de 180 grados hacia el cuello
+    c_2. La celda de la cola c_L sí es válida porque se libera en el
+    mismo turno.
     """
     acciones: List[str] = []
     cabeza = estado.cabeza
     cuello = estado.cuerpo[1] if estado.longitud >= 2 else None
-    # El segmento c_L se libera al avanzar, por lo que solo bloquean c_1 ... c_{L-1}
+    # La cola c_L se libera al avanzar: solo bloquean c_1, ..., c_{L-1}.
     cuerpo_bloqueado = set(estado.cuerpo[:-1])
     obstaculos = set(estado.obstaculos)
 
@@ -118,14 +174,25 @@ def obtener_acciones_aplicables(estado: EstadoSnake) -> List[str]:
 def aplicar_transicion(
     estado: EstadoSnake, accion: str, comer_fruta: bool = True
 ) -> EstadoSnake:
+    """Modelo de transición determinista T(s, a).
+
+    Si la nueva cabeza h' cae sobre una fruta y ``comer_fruta`` es
+    verdadero, la serpiente crece una celda. En otro caso el cuerpo
+    avanza y la cola libera su celda. Las frutas no se reubican aquí;
+    eso lo hace el entorno ``Snake``.
+
+    Raises
+    ------
+    ValueError
+        Si la acción saca la cabeza del tablero.
     """
-    Modelo de transición determinista T(s, a) para un subproblema.
-    Si h' coincide con una fruta y comer_fruta=True, la serpiente crece en 1 unidad.
-    En caso contrario, el cuerpo avanza y la cola se recorre.
-    """
-    nueva_h = mover_coordenada(estado.cabeza, accion, estado.tamano, estado.toroidal)
+    nueva_h = mover_coordenada(
+        estado.cabeza, accion, estado.tamano, estado.toroidal
+    )
     if nueva_h is None:
-        raise ValueError(f"La acción {accion} sale del tablero desde {estado.cabeza}.")
+        raise ValueError(
+            f"La acción {accion} sale del tablero desde {estado.cabeza}."
+        )
 
     frutas_actuales = set(estado.todas_las_frutas)
     comio = comer_fruta and (nueva_h in frutas_actuales)
@@ -147,10 +214,11 @@ def aplicar_transicion(
 
 
 def calcular_riesgo_celda(estado: EstadoSnake) -> float:
-    """
-    Evalúa la función de riesgo r(h') en [0, 1] para la cabeza actual del estado.
-    Cuenta cuántos de los 3 vecinos posibles hacia adelante están bloqueados por
-    el cuerpo, muros u orillas del tablero.
+    """Calcula el riesgo local r(h') en [0, 1] de la cabeza del estado.
+
+    Cuenta cuántas de las tres direcciones de avance, todas menos la del
+    cuello, están bloqueadas por el cuerpo, un obstáculo o el borde, y
+    divide entre 3.
     """
     cabeza = estado.cabeza
     cuello = estado.cuerpo[1] if estado.longitud >= 2 else None
@@ -170,15 +238,32 @@ def calcular_riesgo_celda(estado: EstadoSnake) -> float:
 
 
 # =============================================================================
-# 1. CLASE ESPACIO DE ESTADOS (COMPATIBLE CON busqueda.py Y utils_espacios.py)
+# 1. Espacio de estados del subproblema
 # =============================================================================
 
+
 class SubproblemaSnake:
-    """
-    Representa el subproblema determinista de llevar la cabeza de la serpiente
-    hasta una celda objetivo (la fruta actual o la cola en el chequeo de seguridad).
-    Implementa exactamente los métodos exigidos por nodo_hijo() en busqueda.py:
-    estado_inicial, acciones_aplicables, transicion, test_objetivo, costo y codigo.
+    """Subproblema determinista de llevar la cabeza hasta una celda.
+
+    La celda objetivo es la fruta actual o, en el chequeo de seguridad,
+    la cola. Implementa los métodos que usan los algoritmos de
+    ``busqueda.py``: ``estado_inicial``, ``acciones_aplicables``,
+    ``transicion``, ``test_objetivo``, ``costo`` y ``codigo``.
+
+    Parameters
+    ----------
+    estado_inicial : EstadoSnake, optional
+        Estado de partida. Por defecto, una serpiente de longitud 1 en
+        (5, 5) con la fruta en (8, 8).
+    objetivo : Celda, optional
+        Celda a alcanzar. Por defecto, la fruta del estado inicial.
+    lambda_riesgo : float
+        Peso lambda del riesgo en el costo por paso.
+    comer_en_objetivo : bool
+        Si la serpiente crece al llegar al objetivo.
+    codigo_cuerpo_completo : bool
+        Si el código del estado incluye todo el cuerpo y no solo la
+        cabeza.
     """
 
     def __init__(
@@ -189,37 +274,47 @@ class SubproblemaSnake:
         comer_en_objetivo: bool = True,
         codigo_cuerpo_completo: bool = False,
     ):
+        """Crea el subproblema con los parámetros indicados."""
         if estado_inicial is None:
             estado_inicial = EstadoSnake(cuerpo=((5, 5),), fruta=(8, 8))
         self.estado_inicial = estado_inicial
-        self.objetivo = objetivo if objetivo is not None else estado_inicial.fruta
+        self.objetivo = (
+            objetivo if objetivo is not None else estado_inicial.fruta
+        )
         self.lambda_riesgo = lambda_riesgo
         self.comer_en_objetivo = comer_en_objetivo
         self.codigo_cuerpo_completo = codigo_cuerpo_completo
 
     def acciones_aplicables(self, estado: EstadoSnake) -> List[str]:
-        """Devuelve la lista de acciones aplicables desde 'estado'."""
+        """Devuelve la lista de acciones aplicables desde ``estado``."""
         return obtener_acciones_aplicables(estado)
 
     def transicion(self, estado: EstadoSnake, accion: str) -> EstadoSnake:
-        """Devuelve el estado siguiente tras aplicar 'accion'."""
-        nueva_h = mover_coordenada(estado.cabeza, accion, estado.tamano, estado.toroidal)
+        """Devuelve el estado que resulta de aplicar ``accion``.
+
+        La serpiente solo crece si la acción la lleva al objetivo y
+        ``comer_en_objetivo`` es verdadero.
+        """
+        nueva_h = mover_coordenada(
+            estado.cabeza, accion, estado.tamano, estado.toroidal
+        )
         es_meta = (self.objetivo is not None) and (nueva_h == self.objetivo)
         return aplicar_transicion(
             estado, accion, comer_fruta=(self.comer_en_objetivo and es_meta)
         )
 
     def test_objetivo(self, estado: EstadoSnake) -> bool:
-        """Verifica si la cabeza llegó al objetivo del subproblema."""
+        """Indica si la cabeza llegó al objetivo del subproblema."""
+        # Con varias frutas, cualquiera de ellas cuenta como objetivo.
         if estado.frutas_extra and self.objetivo == estado.fruta:
             return estado.cabeza in estado.todas_las_frutas
         return self.objetivo is not None and estado.cabeza == self.objetivo
 
     def costo(self, estado: EstadoSnake, accion: str) -> float:
-        """
-        Función de pérdida instantánea por paso:
-        c(s, a, s') = 1 + lambda * r(h').
-        Con lambda = 0 devuelve costo unitario 1.
+        """Costo de un paso, c(s, a, s') = 1 + lambda * r(h').
+
+        Con lambda = 0 el costo es 1 y no hace falta simular la
+        transición.
         """
         if self.lambda_riesgo <= 0.0:
             return 1.0
@@ -227,9 +322,11 @@ class SubproblemaSnake:
         return 1.0 + self.lambda_riesgo * calcular_riesgo_celda(estado_sig)
 
     def codigo(self, estado: EstadoSnake) -> str:
-        """
-        Código único del estado para detección de ciclos y tabla de explorados.
-        Por defecto codifica la celda de la cabeza 'x-y' para búsqueda en grafo eficiente.
+        """Código del estado para la tabla de explorados.
+
+        Por defecto codifica solo la cabeza como ``"x-y"``, lo que acota
+        el grafo a las N^2 celdas del tablero. Con
+        ``codigo_cuerpo_completo`` codifica todo el cuerpo.
         """
         if self.codigo_cuerpo_completo:
             return "|".join(f"{x}-{y}" for x, y in estado.cuerpo)
@@ -237,9 +334,11 @@ class SubproblemaSnake:
         return f"{x}-{y}"
 
     def heuristica(self, estado: EstadoSnake) -> float:
-        """
-        Heurística por defecto h_1(s): distancia Manhattan (o toroidal si aplica).
-        Permite invocar avara(problema, problema.heuristica) igual que en el Taller 10.
+        """Heurística por defecto h_1(s): distancia Manhattan a la meta.
+
+        En el modo toroidal usa la distancia Manhattan toroidal y, con
+        varias frutas, la distancia a la más cercana. Permite llamar a
+        ``avara(problema, problema.heuristica)``.
         """
         objetivos = (
             estado.todas_las_frutas
@@ -265,7 +364,15 @@ class SubproblemaSnake:
         return dibujar_tablero_snake(est, ax=ax)
 
     def pintar_camino(self, camino: List[str], sleep_time: float = 0.25):
-        """Anima una secuencia de acciones sobre el subproblema (al estilo Rompecabezas)."""
+        """Anima una secuencia de acciones desde el estado inicial.
+
+        Parameters
+        ----------
+        camino : list of str
+            Acciones a aplicar en orden.
+        sleep_time : float
+            Pausa en segundos entre cuadros.
+        """
         estados = [self.estado_inicial]
         for accion in camino:
             estados.append(self.transicion(estados[-1], accion))
@@ -277,17 +384,43 @@ class SubproblemaSnake:
 
 
 # =============================================================================
-# 2. ENTORNO SECUENCIAL COMPLETO (COMPATIBLE CON Episode Y Experiment DE utils.py)
+# 2. Entorno secuencial de la partida completa
 # =============================================================================
 
+
 class Snake:
-    """
-    Entorno completo del juego Snake por turnos.
-    Cumple la interfaz de Laberinto (Taller 10) y Episode (utils.py):
-    - reset() -> devuelve el estado inicial.
-    - step(accion) -> devuelve (new_state, reward, done).
-    - test_objetivo() -> True si se llenó el tablero (L == N^2 - obstaculos).
-    - render() -> visualiza el tablero con matplotlib.
+    """Entorno por turnos de una partida completa de Snake.
+
+    Ofrece la interfaz que usan ``Episode`` y el benchmark de
+    ``utils.py``:
+
+    - ``reset()`` devuelve el estado inicial.
+    - ``step(accion)`` devuelve ``(nuevo_estado, recompensa, done)``.
+    - ``test_objetivo()`` indica si el tablero quedó lleno.
+    - ``render()`` dibuja el tablero con matplotlib.
+
+    Parameters
+    ----------
+    tamano : int
+        Lado N del tablero.
+    semilla : int
+        Semilla del generador de obstáculos y frutas.
+    pos_inicial : Celda, optional
+        Posición inicial de la cabeza. Por defecto, el centro.
+    fruta_inicial : Celda, optional
+        Posición de la primera fruta. Por defecto, al azar.
+    toroidal : bool
+        Si el tablero no tiene bordes.
+    num_obstaculos : int
+        Número de muros fijos generados al azar.
+    num_frutas : int
+        Número de frutas simultáneas en el tablero.
+    lambda_riesgo : float
+        Peso del riesgo en la pérdida por paso.
+    k_max : int
+        Máximo de pasos seguidos sin comer antes de terminar.
+    ganancia_fruta, ganancia_victoria, perdida_choque : float
+        Términos de la función de recompensa.
     """
 
     def __init__(
@@ -305,6 +438,7 @@ class Snake:
         ganancia_victoria: float = 1000.0,
         perdida_choque: float = 100.0,
     ):
+        """Crea el entorno y lo deja listo con ``reset``."""
         self.tamano = tamano
         self.semilla = semilla
         self.pos_inicial_config = pos_inicial
@@ -315,7 +449,7 @@ class Snake:
         self.lambda_riesgo = lambda_riesgo
         self.k_max = k_max
 
-        # Parámetros de la función de Ganancia y Pérdida (Recompensa R)
+        # Términos de la función de recompensa R.
         self.ganancia_fruta = ganancia_fruta
         self.ganancia_victoria = ganancia_victoria
         self.perdida_choque = perdida_choque
@@ -333,9 +467,16 @@ class Snake:
         self.reset()
 
     def reset(self, semilla: Optional[int] = None) -> EstadoSnake:
-        """
-        Reinicia el entorno con la semilla dada para garantizar reproducibilidad
-        exacta entre los distintos algoritmos.
+        """Reinicia la partida y devuelve el estado inicial.
+
+        Usar la misma semilla garantiza que distintos agentes enfrenten
+        exactamente los mismos obstáculos y la misma secuencia de
+        frutas.
+
+        Parameters
+        ----------
+        semilla : int, optional
+            Nueva semilla. Si se omite, se reutiliza la actual.
         """
         if semilla is not None:
             self.semilla = semilla
@@ -348,7 +489,8 @@ class Snake:
 
         cuerpo_ini = (cabeza_ini,)
 
-        # Generación reproducible de obstáculos fijos (si la variante está activa)
+        # Obstáculos fijos, generados de forma reproducible con la
+        # semilla.
         obstaculos: Tuple[Celda, ...] = ()
         if self.num_obstaculos > 0:
             candidatas = [
@@ -364,7 +506,7 @@ class Snake:
             )
             obstaculos = tuple(candidatas[int(i)] for i in indices)
 
-        # Generación de fruta(s)
+        # Frutas iniciales en celdas libres.
         ocupadas = set(cuerpo_ini) | set(obstaculos)
         frutas_generadas: List[Celda] = []
         if (
@@ -382,7 +524,9 @@ class Snake:
             ocupadas.add(nueva_f)
 
         fruta_principal = frutas_generadas[0] if frutas_generadas else None
-        frutas_extra = tuple(frutas_generadas[1:]) if len(frutas_generadas) > 1 else ()
+        frutas_extra = (
+            tuple(frutas_generadas[1:]) if len(frutas_generadas) > 1 else ()
+        )
 
         self.estado = EstadoSnake(
             cuerpo=cuerpo_ini,
@@ -403,7 +547,10 @@ class Snake:
         return self.estado
 
     def _sortear_celda_libre(self, ocupadas: Set[Celda]) -> Optional[Celda]:
-        """Elige una celda libre con distribución uniforme usando el generador con semilla."""
+        """Elige al azar, de forma uniforme, una celda libre.
+
+        Devuelve ``None`` si no quedan celdas libres.
+        """
         libres = [
             (x, y)
             for x in range(self.tamano)
@@ -415,15 +562,17 @@ class Snake:
         idx = int(self.rng.integers(0, len(libres)))
         return libres[idx]
 
-    def acciones_aplicables(self, estado: Optional[EstadoSnake] = None) -> List[str]:
-        """Retorna las acciones válidas en el estado dado (o en el estado actual)."""
+    def acciones_aplicables(
+        self, estado: Optional[EstadoSnake] = None
+    ) -> List[str]:
+        """Devuelve las acciones aplicables en ``estado`` o actual."""
         est = estado if estado is not None else self.estado
         if est is None:
             return []
         return obtener_acciones_aplicables(est)
 
     def test_objetivo(self, estado: Optional[EstadoSnake] = None) -> bool:
-        """Condición de victoria de la partida: llenar todas las celdas disponibles."""
+        """Indica si se ganó, es decir, si el tablero está lleno."""
         est = estado if estado is not None else self.estado
         if est is None:
             return False
@@ -431,9 +580,16 @@ class Snake:
         return est.longitud >= meta
 
     def step(self, accion: str) -> Tuple[EstadoSnake, float, bool]:
-        """
-        Ejecuta una acción en el entorno y retorna exactamente (new_state, reward, done)
-        para compatibilidad directa con la clase Episode de utils.py.
+        """Ejecuta una acción y avanza un turno.
+
+        Una acción no aplicable se trata como colisión y termina la
+        partida. Si la serpiente come, se reubica la fruta; después se
+        revisan los estados terminales.
+
+        Returns
+        -------
+        tuple
+            ``(nuevo_estado, recompensa, done)``.
         """
         if self.done or self.estado is None:
             return self.estado, 0.0, True
@@ -446,7 +602,7 @@ class Snake:
             reward = -self.perdida_choque
             return self.estado, reward, True
 
-        # Aplicamos transición física del cuerpo
+        # Transición del cuerpo y pérdida del paso, 1 + lambda * r(h').
         est_trans = aplicar_transicion(self.estado, accion, comer_fruta=True)
         perdida_paso = 1.0 + (
             self.lambda_riesgo * calcular_riesgo_celda(est_trans)
@@ -464,7 +620,9 @@ class Snake:
         if comio:
             self.frutas_comidas += 1
             self.pasos_sin_comer = 0
-            frutas_restantes = [f for f in frutas_previas if f != est_trans.cabeza]
+            frutas_restantes = [
+                f for f in frutas_previas if f != est_trans.cabeza
+            ]
 
             if self.test_objetivo(est_trans):
                 self.done = True
@@ -487,7 +645,9 @@ class Snake:
                     ocupadas.add(nf)
                 nueva_fruta = frutas_restantes[0] if frutas_restantes else None
                 nuevas_extra = (
-                    tuple(frutas_restantes[1:]) if len(frutas_restantes) > 1 else ()
+                    tuple(frutas_restantes[1:])
+                    if len(frutas_restantes) > 1
+                    else ()
                 )
         else:
             self.pasos_sin_comer += 1
@@ -506,11 +666,13 @@ class Snake:
             frutas_extra=nuevas_extra,
         )
 
-        # Verificación de estados terminales tras mover
+        # Estados terminales: k_max pasos sin comer o sin salida.
         if not self.done:
             if self.pasos_sin_comer >= self.k_max:
                 self.done = True
-                self.causa_fin = f"Límite de pasos sin comer alcanzado (k_max={self.k_max})"
+                self.causa_fin = (
+                    f"Límite de pasos sin comer alcanzado (k_max={self.k_max})"
+                )
                 self.perdida_total += self.perdida_choque
                 reward -= self.perdida_choque
             elif len(self.acciones_aplicables(self.estado)) == 0:
@@ -531,7 +693,11 @@ class Snake:
         titulo: Optional[str] = None,
         ax=None,
     ):
-        """Dibuja el tablero actual o cualquier estado junto con la búsqueda."""
+        """Dibuja el estado actual u otro estado, con capas de búsqueda.
+
+        Si no se da un título, se muestra un resumen de la partida.
+        Los demás parámetros se pasan a ``dibujar_tablero_snake``.
+        """
         est = estado if estado is not None else self.estado
         if titulo is None and est is not None:
             titulo = (
@@ -550,19 +716,25 @@ class Snake:
 
 
 # =============================================================================
-# 3. JUEGO ADVERSARIO (COMPATIBLE CON juegos.py Y EnvfromGameAndPl2 DE utils.py)
+# 3. Juego adversario
 # =============================================================================
 
+
 class SnakeJuegoAdversario:
-    """
-    Variante de la Sección 5: Fruta Adversaria como juego de suma cero.
-    - Jugador MAX ('serpiente'): mueve la cabeza buscando sobrevivir y comer.
-    - Jugador MIN ('fruta'): cuando la serpiente come, coloca la nueva fruta en la
-      celda libre que minimice la utilidad de la serpiente (Minimax con poda Alfa-Beta).
-    Implementa la interfaz de juegos.py (player, acciones, resultado, es_terminal, utilidad, render).
+    """Variante de fruta adversaria como juego de suma cero.
+
+    - El jugador MAX, ``"serpiente"``, mueve la cabeza para sobrevivir y
+      comer.
+    - El jugador MIN, ``"fruta"``, coloca cada fruta nueva en la celda
+      libre que minimiza la utilidad de la serpiente.
+
+    Implementa la interfaz de juego que usa ``AgenteFrutaAdversaria``:
+    ``player``, ``acciones``, ``resultado``, ``es_terminal``,
+    ``utilidad`` y ``render``.
     """
 
     def __init__(self, tamano: int = 10, obstaculos: Tuple[Celda, ...] = ()):
+        """Crea el juego con la serpiente en el centro del tablero."""
         mitad = tamano // 2
         self.tamano = tamano
         self.estado_inicial = EstadoSnake(
@@ -570,19 +742,20 @@ class SnakeJuegoAdversario:
             fruta=(mitad + 2, mitad),
             tamano=tamano,
             obstaculos=obstaculos,
-            turno='serpiente',
+            turno="serpiente",
         )
 
     def player(self, estado: EstadoSnake) -> str:
-        """Devuelve quién tiene el turno: 'serpiente' (MAX) o 'fruta' (MIN)."""
+        """Devuelve quién juega: ``"serpiente"`` (MAX) o ``"fruta"``."""
         return estado.turno
 
     def acciones(self, estado: EstadoSnake) -> List:
+        """Devuelve las jugadas posibles del jugador en turno.
+
+        Para la serpiente son las direcciones aplicables; para la fruta,
+        las celdas libres donde puede aparecer.
         """
-        Si juega 'serpiente', devuelve las direcciones válidas.
-        Si juega 'fruta', devuelve las celdas libres donde puede colocar la manzana.
-        """
-        if estado.turno == 'serpiente':
+        if estado.turno == "serpiente":
             return obtener_acciones_aplicables(estado)
         ocupadas = set(estado.cuerpo) | set(estado.obstaculos)
         libres = [
@@ -594,19 +767,22 @@ class SnakeJuegoAdversario:
         return libres
 
     def resultado(self, estado: EstadoSnake, accion) -> EstadoSnake:
-        """Aplica la jugada de la serpiente o la colocación de la fruta adversaria."""
-        if estado.turno == 'serpiente':
+        """Aplica la jugada del jugador y da el estado nuevo."""
+        if estado.turno == "serpiente":
             est_sig = aplicar_transicion(estado, accion, comer_fruta=True)
-            comio = (estado.fruta is not None) and (est_sig.cabeza == estado.fruta)
+            comio = (estado.fruta is not None) and (
+                est_sig.cabeza == estado.fruta
+            )
             if comio:
-                # Si comió, el siguiente turno es del adversario para colocar la fruta
+                # Si comió, el turno pasa a la fruta para colocar la
+                # nueva.
                 return EstadoSnake(
                     cuerpo=est_sig.cuerpo,
                     fruta=None,
                     tamano=estado.tamano,
                     toroidal=estado.toroidal,
                     obstaculos=estado.obstaculos,
-                    turno='fruta',
+                    turno="fruta",
                 )
             return EstadoSnake(
                 cuerpo=est_sig.cuerpo,
@@ -614,45 +790,59 @@ class SnakeJuegoAdversario:
                 tamano=estado.tamano,
                 toroidal=estado.toroidal,
                 obstaculos=estado.obstaculos,
-                turno='serpiente',
+                turno="serpiente",
             )
         else:
-            # Jugada del oponente: accion es la tupla (x, y) donde coloca la fruta
+            # Jugada de la fruta: accion es la celda (x, y) donde
+            # aparece.
             return EstadoSnake(
                 cuerpo=estado.cuerpo,
                 fruta=accion,
                 tamano=estado.tamano,
                 toroidal=estado.toroidal,
                 obstaculos=estado.obstaculos,
-                turno='serpiente',
+                turno="serpiente",
             )
 
     def es_terminal(self, estado: EstadoSnake) -> bool:
-        """El juego termina si el tablero se llena o si el jugador en turno no tiene jugadas."""
+        """Indica si el juego terminó.
+
+        Termina cuando el tablero se llena o cuando el jugador en turno
+        no tiene jugadas.
+        """
         meta = (estado.tamano * estado.tamano) - len(estado.obstaculos)
         if estado.longitud >= meta:
             return True
-        if estado.turno == 'serpiente' and len(obtener_acciones_aplicables(estado)) == 0:
+        if (
+            estado.turno == "serpiente"
+            and len(obtener_acciones_aplicables(estado)) == 0
+        ):
             return True
-        if estado.turno == 'fruta' and len(self.acciones(estado)) == 0:
+        if estado.turno == "fruta" and len(self.acciones(estado)) == 0:
             return True
         return False
 
-    def utilidad(self, estado: EstadoSnake, jugador: str = 'serpiente') -> Optional[float]:
-        """Devuelve +1000 si gana la serpiente, -1000 si queda atrapada."""
+    def utilidad(
+        self, estado: EstadoSnake, jugador: str = "serpiente"
+    ) -> Optional[float]:
+        """Devuelve +1000 si gana la serpiente y -1000 si se atrapa."""
         if not self.es_terminal(estado):
             return None
         meta = (estado.tamano * estado.tamano) - len(estado.obstaculos)
         valor = 1000.0 if estado.longitud >= meta else -1000.0
-        return valor if jugador == 'serpiente' else -valor
+        return valor if jugador == "serpiente" else -valor
 
     def render(self, estado: EstadoSnake):
-        dibujar_tablero_snake(estado, titulo=f"Modo Adversario | Turno: {estado.turno}")
+        """Dibuja el estado indicando de quién es el turno."""
+        dibujar_tablero_snake(
+            estado, titulo=f"Modo Adversario | Turno: {estado.turno}"
+        )
 
 
 # =============================================================================
-# 4. FUNCIÓN DE RENDERIZADO CON MATPLOTLIB PATCHES (ESTILO TALLERES DEL CURSO)
+# 4. Dibujo del tablero
 # =============================================================================
+
 
 def dibujar_tablero_snake(
     estado: EstadoSnake,
@@ -663,15 +853,31 @@ def dibujar_tablero_snake(
     titulo: Optional[str] = None,
     ax=None,
 ):
-    """
-    Dibuja la cuadrícula de Snake usando matplotlib.patches.Rectangle,
-    diferenciando visualmente:
-    - Nodos expandidos (azul claro)
-    - Frontera actual (amarillo)
-    - Nodo actual de búsqueda (naranja)
-    - Camino solución planeado (verde claro)
-    - Cuerpo de la serpiente con degradado desde la cabeza c_1 hasta la cola c_L
-    - Fruta(s) y obstáculos fijos.
+    """Dibuja el tablero de Snake con matplotlib.
+
+    Las capas se distinguen por color: celdas expandidas en azul claro,
+    frontera en amarillo, nodo actual en naranja, camino planeado en
+    verde claro, obstáculos en negro, frutas en rojo y el cuerpo con un
+    degradado de la cabeza c_1 a la cola c_L.
+
+    Parameters
+    ----------
+    estado : EstadoSnake
+        Estado a dibujar.
+    camino, frontera, expandidos : list of Celda, optional
+        Capas de la búsqueda.
+    celda_actual : Celda, optional
+        Celda que el algoritmo está expandiendo.
+    titulo : str, optional
+        Título del gráfico.
+    ax : matplotlib.axes.Axes, optional
+        Ejes donde dibujar. Si se omite, se crea una figura y se
+        muestra.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        Los ejes con el dibujo.
     """
     mostrar_plt = ax is None
     if ax is None:
@@ -682,19 +888,19 @@ def dibujar_tablero_snake(
     n = estado.tamano
     step = 1.0 / n
 
-    # Fondo del tablero (mismo estilo cornsilk de Laberinto y OchoReinas)
+    # Fondo del tablero.
     ax.add_patch(
         patches.Rectangle(
             (0, 0),
             1.0,
             1.0,
-            facecolor='cornsilk',
-            edgecolor='black',
+            facecolor="cornsilk",
+            edgecolor="black",
             linewidth=2,
         )
     )
 
-    # 1. Celdas expandidas en el proceso de búsqueda
+    # 1. Celdas expandidas durante la búsqueda.
     if expandidos:
         for x, y in expandidos:
             ax.add_patch(
@@ -702,12 +908,12 @@ def dibujar_tablero_snake(
                     (x * step, y * step),
                     step,
                     step,
-                    facecolor='#b3cde3',
+                    facecolor="#b3cde3",
                     alpha=0.65,
                 )
             )
 
-    # 2. Celdas en la frontera de búsqueda
+    # 2. Celdas en la frontera.
     if frontera:
         for x, y in frontera:
             ax.add_patch(
@@ -715,12 +921,12 @@ def dibujar_tablero_snake(
                     (x * step, y * step),
                     step,
                     step,
-                    facecolor='#fed976',
+                    facecolor="#fed976",
                     alpha=0.85,
                 )
             )
 
-    # 3. Camino planeado hacia la meta
+    # 3. Camino planeado hacia la meta.
     if camino:
         for x, y in camino:
             ax.add_patch(
@@ -728,12 +934,12 @@ def dibujar_tablero_snake(
                     (x * step + step * 0.18, y * step + step * 0.18),
                     step * 0.64,
                     step * 0.64,
-                    facecolor='#78c679',
+                    facecolor="#78c679",
                     alpha=0.75,
                 )
             )
 
-    # 4. Celda actual que está evaluando el algoritmo
+    # 4. Celda que el algoritmo está expandiendo.
     if celda_actual is not None:
         cx, cy = celda_actual
         ax.add_patch(
@@ -741,31 +947,31 @@ def dibujar_tablero_snake(
                 (cx * step, cy * step),
                 step,
                 step,
-                facecolor='#fd8d3c',
-                edgecolor='red',
+                facecolor="#fd8d3c",
+                edgecolor="red",
                 linewidth=2,
                 alpha=0.9,
             )
         )
 
-    # 5. Obstáculos fijos (muros)
+    # 5. Obstáculos fijos.
     for ox, oy in estado.obstaculos:
         ax.add_patch(
             patches.Rectangle(
                 (ox * step, oy * step),
                 step,
                 step,
-                facecolor='#252525',
+                facecolor="#252525",
             )
         )
 
-    # 6. Cuerpo de la serpiente (degradado de verde oscuro en cabeza a verde claro en cola)
+    # 6. Cuerpo, de verde oscuro en la cabeza a verde claro en la cola.
     longitud = estado.longitud
     for idx, (sx, sy) in enumerate(estado.cuerpo):
         if idx == 0:
-            color = '#005a32'  # Cabeza c_1
+            color = "#005a32"  # Cabeza c_1.
         elif idx == longitud - 1:
-            color = '#a1d99b'  # Cola c_L
+            color = "#a1d99b"  # Cola c_L.
         else:
             frac = idx / max(1, longitud - 1)
             r = 0.05 + 0.45 * frac
@@ -780,7 +986,7 @@ def dibujar_tablero_snake(
                 step - 2 * margen,
                 step - 2 * margen,
                 facecolor=color,
-                edgecolor='black',
+                edgecolor="black",
                 linewidth=1.0,
             )
         )
@@ -807,41 +1013,51 @@ def dibujar_tablero_snake(
                 fontsize=max(6, int(95 / n)),
             )
 
-    # 7. Fruta(s)
+    # 7. Frutas.
     for fx, fy in estado.todas_las_frutas:
         circulo = patches.Circle(
             ((fx + 0.5) * step, (fy + 0.5) * step),
             radius=step * 0.36,
-            facecolor='#e31a1c',
-            edgecolor='darkred',
+            facecolor="#e31a1c",
+            edgecolor="darkred",
             linewidth=1.5,
         )
         ax.add_patch(circulo)
 
-    # Líneas de la cuadrícula
+    # Líneas de la cuadrícula.
     for j in range(1, n):
         loc = j * step
-        ax.add_patch(patches.Rectangle((0, loc), 1.0, 0.003, facecolor='gray', alpha=0.4))
-        ax.add_patch(patches.Rectangle((loc, 0), 0.003, 1.0, facecolor='gray', alpha=0.4))
+        ax.add_patch(
+            patches.Rectangle(
+                (0, loc), 1.0, 0.003, facecolor="gray", alpha=0.4
+            )
+        )
+        ax.add_patch(
+            patches.Rectangle(
+                (loc, 0), 0.003, 1.0, facecolor="gray", alpha=0.4
+            )
+        )
 
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.set_aspect('equal')
-    ax.axis('off')
+    ax.set_aspect("equal")
+    ax.axis("off")
     if titulo:
+        # La causa de fin va en su propia línea para que el título
+        # quepa.
         if " | Fin:" in titulo and "\nFin:" not in titulo:
             titulo = titulo.replace(" | Fin:", "\nFin:")
         ax.set_title(
             titulo,
             fontsize=9.5,
-            weight='bold',
+            weight="bold",
             pad=10,
             linespacing=1.35,
             wrap=True,
             bbox=dict(
-                boxstyle='round,pad=0.35',
-                facecolor='#f8f9fa',
-                edgecolor='#cccccc',
+                boxstyle="round,pad=0.35",
+                facecolor="#f8f9fa",
+                edgecolor="#cccccc",
                 alpha=0.9,
             ),
         )
