@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SnakeLab Studio</title>
+<link rel="stylesheet" href="estilos.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐍</text></svg>">
+</head>
+<body>
+
+<header class="barra">
+  <div class="marca">
+    <span class="logo">🐍</span>
+    <div>
+      <div class="marca-titulo">SnakeLab Studio</div>
+      <div class="marca-sub">Búsqueda heurística en Snake · Representación y solución automática de problemas</div>
+    </div>
+  </div>
+  <nav class="pestanas" id="pestanas">
+    <button class="pestana activa" data-vista="busqueda"><span class="num">1</span>Búsqueda paso a paso</button>
+    <button class="pestana" data-vista="comparar"><span class="num">2</span>Comparar algoritmos</button>
+    <button class="pestana" data-vista="partida"><span class="num">3</span>Partida completa</button>
+    <button class="pestana" data-vista="jugar"><span class="num">4</span>Juega contra la IA</button>
+    <button class="pestana" data-vista="resultados"><span class="num">5</span>Resultados 100 semillas</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ===================================================== 1. BÚSQUEDA -->
+<section class="vista activa" id="vista-busqueda">
+  <div class="guia">
+    <span><b>1</b> Arma la instancia (aleatoria o dibujándola en el tablero)</span>
+    <span><b>2</b> Elige el algoritmo</span>
+    <span><b>3</b> Dale <b>Resolver</b> y mira cómo explora: avanza, retrocede o pausa con los controles</span>
+  </div>
+  <div class="rejilla-3">
+    <aside class="columna">
+      <div class="tarjeta">
+        <h3>Instancia</h3>
+        <div class="fila-chips" id="b-dificultad">
+          <button class="chip" data-dif="facil">Fácil</button>
+          <button class="chip activo" data-dif="media">Media</button>
+          <button class="chip" data-dif="dificil">Difícil</button>
+        </div>
+        <label class="control">Tamaño del tablero <output id="b-N-v">10</output>
+          <input type="range" id="b-N" min="5" max="15" value="10"></label>
+        <label class="control">Longitud de la serpiente <output id="b-L-v">12</output>
+          <input type="range" id="b-L" min="1" max="40" value="12"></label>
+        <label class="control">Muros <output id="b-M-v">6</output>
+          <input type="range" id="b-M" min="0" max="25" value="6"></label>
+        <div class="control-linea">
+          <label class="control compacto">Semilla <input type="number" id="b-semilla" value="3" min="0"></label>
+          <button class="boton secundario icono" id="b-dado" title="Semilla aleatoria">🎲</button>
+          <label class="interruptor"><input type="checkbox" id="b-toro"><span></span>Toroidal</label>
+        </div>
+        <button class="boton secundario ancho" id="b-generar">Generar instancia</button>
+        <div class="separador">o edítala a mano</div>
+        <div class="fila-chips herramientas" id="b-herramientas">
+          <button class="chip" data-herr="fruta">🍎 Fruta</button>
+          <button class="chip" data-herr="muro">🧱 Muro</button>
+          <button class="chip" data-herr="serpiente">🐍 Serpiente</button>
+        </div>
+        <p class="ayuda" id="b-ayuda-herr">Elige una herramienta y haz clic en el tablero.</p>
+      </div>
+
+      <div class="tarjeta">
+        <h3>Algoritmo</h3>
+        <div class="fila-chips algoritmos" id="b-algoritmos">
+          <button class="chip" data-alg="BFS">BFS</button>
+          <button class="chip" data-alg="DFS">DFS</button>
+          <button class="chip" data-alg="UCS">UCS</button>
+          <button class="chip" data-alg="Avara">Avara</button>
+          <button class="chip activo" data-alg="A*">A*</button>
+          <button class="chip" data-alg="Beam">Haz</button>
+        </div>
+        <p class="ayuda" id="b-desc-alg"></p>
+        <label class="control" id="b-heur-ctl">Heurística
+          <select id="b-heur">
+            <option value="manhattan">h₁ Manhattan</option>
+            <option value="euclidea">h₂ Euclídea</option>
+            <option value="riesgo">h₃ Manhattan + riesgo</option>
+          </select></label>
+        <label class="control">λ (aversión al riesgo en el costo) <output id="b-lam-v">0.0</output>
+          <input type="range" id="b-lam" min="0" max="3" step="0.5" value="0"></label>
+        <label class="control" id="b-k-ctl">k (ancho del haz) <output id="b-k-v">3</output>
+          <input type="range" id="b-k" min="1" max="8" value="3"></label>
+      </div>
+    </aside>
+
+    <div class="centro">
+      <div class="tarjeta tablero-tarjeta">
+        <div class="tablero-cabecera">
+          <div class="cabecera-izq">
+            <span class="insignia" id="b-fase">Instancia lista</span>
+            <span class="texto-suave" id="b-info-inst"></span>
+          </div>
+          <button class="boton primario" id="b-resolver">▶ Resolver</button>
+        </div>
+        <div class="lienzo-caja"><canvas id="b-canvas"></canvas></div>
+        <div class="reproductor" id="b-repro"></div>
+      </div>
+      <div class="explicacion" id="b-explicacion">Genera o dibuja una instancia y presiona <b>Resolver</b>.</div>
+    </div>
+
+    <aside class="columna">
+      <div class="tarjeta">
+        <h3>Estado interno del algoritmo</h3>
+        <div class="kpis" id="b-estado"><p class="ayuda" style="grid-column:1/-1;margin:0">Aparece al resolver: nodo actual, g, h, f y tamaño de la frontera en cada iteración.</p></div>
+      </div>
+      <div class="tarjeta">
+        <h3>Tamaño de la frontera</h3>
+        <svg class="grafico" id="b-sparkline" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="tarjeta">
+        <h3>Resultado</h3>
+        <div class="kpis" id="b-resultado"><p class="ayuda">Aún no hay resultado.</p></div>
+      </div>
+      <div class="tarjeta">
+        <h3>Leyenda</h3>
+        <div class="leyenda">
+          <span><i class="m expandido"></i>Expandido (visitado)</span>
+          <span><i class="m frontera"></i>En la frontera</span>
+          <span><i class="m actual"></i>Nodo actual</span>
+          <span><i class="m camino"></i>Camino al nodo actual</span>
+          <span><i class="m solucion"></i>Solución final</span>
+          <span><i class="m serpiente"></i>Serpiente (cabeza → cola)</span>
+        </div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ===================================================== 2. COMPARAR -->
+<section class="vista" id="vista-comparar">
+  <div class="guia">
+    <span><b>1</b> Usa la misma instancia de la pestaña 1 (o genera otra allá)</span>
+    <span><b>2</b> Corre los 6 algoritmos y sus heurísticas sobre ella</span>
+    <span><b>3</b> Haz clic en una fila para verla paso a paso</span>
+  </div>
+  <div class="rejilla-comparar">
+    <aside class="columna">
+      <div class="tarjeta">
+        <h3>Instancia actual</h3>
+        <div class="lienzo-caja mini"><canvas id="c-canvas"></canvas></div>
+        <p class="ayuda" id="c-info"></p>
+        <label class="control">λ (aversión al riesgo) <output id="c-lam-v">0.0</output>
+          <input type="range" id="c-lam" min="0" max="3" step="0.5" value="0"></label>
+        <label class="control">k (ancho del haz) <output id="c-k-v">3</output>
+          <input type="range" id="c-k" min="1" max="8" value="3"></label>
+        <button class="boton primario ancho" id="c-correr">⚡ Comparar todos</button>
+      </div>
+    </aside>
+    <div class="columna ancha">
+      <div class="tarjeta">
+        <h3>Métricas sobre la misma instancia</h3>
+        <div class="tabla-caja"><table class="tabla" id="c-tabla">
+          <thead><tr>
+            <th>Algoritmo</th><th>Heurística</th><th>¿Llegó?</th><th>¿Óptima?</th>
+            <th class="num">Longitud</th><th class="num">Costo</th><th class="num">Generados</th>
+            <th class="num">Expandidos</th><th class="num">Frontera máx.</th><th class="num">Tiempo (ms)</th>
+          </tr></thead>
+          <tbody><tr><td colspan="10" class="vacio">Presiona «Comparar todos».</td></tr></tbody>
+        </table></div>
+        <p class="ayuda">Óptima = mismo costo que el mínimo encontrado por UCS y A* (Manhattan). En verde, el mejor valor de cada columna.</p>
+      </div>
+      <div class="tarjeta">
+        <div class="titulo-con-chips">
+          <h3>Gráfico</h3>
+          <div class="fila-chips" id="c-metricas">
+            <button class="chip activo" data-met="expandidos">Expandidos</button>
+            <button class="chip" data-met="generados">Generados</button>
+            <button class="chip" data-met="max_frontera">Frontera máx.</button>
+            <button class="chip" data-met="tiempo_ms">Tiempo</button>
+            <button class="chip" data-met="costo">Costo</button>
+          </div>
+        </div>
+        <svg class="grafico barras" id="c-grafico" viewBox="0 0 760 300"></svg>
+        <p class="ayuda">Azul: encontró la solución óptima · gris: la solución no es óptima.</p>
+      </div>
+      <div class="tarjeta">
+        <h3>Qué exploró cada uno</h3>
+        <div class="mosaico" id="c-mosaico"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 3. PARTIDA -->
+<section class="vista" id="vista-partida">
+  <div class="guia">
+    <span><b>1</b> Configura el agente</span>
+    <span><b>2</b> Simula una partida entera (la serpiente planea una ruta por cada fruta)</span>
+    <span><b>3</b> Activa «lado a lado» para ver el efecto del chequeo de seguridad</span>
+  </div>
+  <div class="rejilla-3">
+    <aside class="columna">
+      <div class="tarjeta">
+        <h3>Agente</h3>
+        <div class="fila-chips algoritmos" id="p-algoritmos">
+          <button class="chip" data-alg="BFS">BFS</button>
+          <button class="chip" data-alg="DFS">DFS</button>
+          <button class="chip" data-alg="UCS">UCS</button>
+          <button class="chip" data-alg="Avara">Avara</button>
+          <button class="chip activo" data-alg="A*">A*</button>
+          <button class="chip" data-alg="Beam">Haz</button>
+        </div>
+        <label class="control" id="p-heur-ctl">Heurística
+          <select id="p-heur">
+            <option value="manhattan">h₁ Manhattan</option>
+            <option value="euclidea">h₂ Euclídea</option>
+            <option value="riesgo">h₃ Manhattan + riesgo</option>
+          </select></label>
+        <label class="interruptor bloque"><input type="checkbox" id="p-seg" checked><span></span>Chequeo de seguridad (camino a la cola)</label>
+        <label class="interruptor bloque"><input type="checkbox" id="p-lado"><span></span>Lado a lado: con vs. sin chequeo</label>
+        <label class="control">λ (aversión al riesgo) <output id="p-lam-v">0.0</output>
+          <input type="range" id="p-lam" min="0" max="3" step="0.5" value="0"></label>
+      </div>
+      <div class="tarjeta">
+        <h3>Entorno</h3>
+        <label class="control">Tamaño del tablero <output id="p-N-v">10</output>
+          <input type="range" id="p-N" min="6" max="14" value="10"></label>
+        <label class="control">Muros fijos <output id="p-M-v">0</output>
+          <input type="range" id="p-M" min="0" max="20" value="0"></label>
+        <label class="control">Frutas simultáneas <output id="p-F-v">1</output>
+          <input type="range" id="p-F" min="1" max="3" value="1"></label>
+        <div class="control-linea">
+          <label class="control compacto">Semilla <input type="number" id="p-semilla" value="0" min="0"></label>
+          <button class="boton secundario icono" id="p-dado" title="Semilla aleatoria">🎲</button>
+          <label class="interruptor"><input type="checkbox" id="p-toro"><span></span>Toroidal</label>
+        </div>
+        <button class="boton primario ancho" id="p-simular">▶ Simular partida</button>
+      </div>
+    </aside>
+
+    <div class="centro">
+      <div class="tarjeta tablero-tarjeta">
+        <div class="tableros" id="p-tableros">
+          <div class="tablero-celda">
+            <div class="tablero-cabecera">
+              <span class="insignia" id="p-titulo-0">Agente</span>
+              <span class="insignia modo" id="p-modo-0"></span>
+            </div>
+            <div class="lienzo-caja"><canvas id="p-canvas-0"></canvas></div>
+          </div>
+          <div class="tablero-celda oculto" id="p-celda-1">
+            <div class="tablero-cabecera">
+              <span class="insignia" id="p-titulo-1">Sin chequeo</span>
+              <span class="insignia modo" id="p-modo-1"></span>
+            </div>
+            <div class="lienzo-caja"><canvas id="p-canvas-1"></canvas></div>
+          </div>
+        </div>
+        <div class="reproductor" id="p-repro"></div>
+      </div>
+      <div class="explicacion" id="p-explicacion">Configura el agente y presiona <b>Simular partida</b>.</div>
+    </div>
+
+    <aside class="columna">
+      <div class="tarjeta">
+        <h3>Marcador</h3>
+        <div id="p-marcador"><p class="ayuda">Aún no hay partida.</p></div>
+      </div>
+      <div class="tarjeta">
+        <h3>Longitud de la serpiente</h3>
+        <svg class="grafico" id="p-grafico" viewBox="0 0 300 160" preserveAspectRatio="none"></svg>
+        <div class="leyenda en-linea" id="p-leyenda-graf"></div>
+      </div>
+      <div class="tarjeta">
+        <h3>Leyenda</h3>
+        <div class="leyenda">
+          <span><i class="m plan"></i>Ruta planeada hacia la fruta</span>
+          <span><i class="m evasion"></i>Evasión: sigue la cola</span>
+          <span><i class="m serpiente"></i>Serpiente</span>
+        </div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ===================================================== 4. JUGAR -->
+<section class="vista" id="vista-jugar">
+  <div class="guia">
+    <span><b>1</b> Presiona <b>Nueva partida</b></span>
+    <span><b>2</b> Muévete con las flechas o W A S D: la IA juega la misma semilla al mismo tiempo</span>
+    <span><b>3</b> Si te trabas, pide una pista a A*</span>
+  </div>
+  <div class="rejilla-jugar">
+    <aside class="columna">
+      <div class="tarjeta">
+        <h3>Reto</h3>
+        <label class="control">Muros <output id="j-M-v">3</output>
+          <input type="range" id="j-M" min="0" max="15" value="3"></label>
+        <div class="control-linea">
+          <label class="control compacto">Semilla <input type="number" id="j-semilla" value="0" min="0"></label>
+          <button class="boton secundario icono" id="j-dado" title="Semilla aleatoria">🎲</button>
+        </div>
+        <div class="fila-chips" id="j-modos">
+          <button class="chip activo" data-modo="turnos">Por turnos</button>
+          <button class="chip" data-modo="real">Tiempo real</button>
+        </div>
+        <label class="control" id="j-vel-ctl">Velocidad <output id="j-vel-v">5</output>
+          <input type="range" id="j-vel" min="2" max="12" value="5"></label>
+        <button class="boton primario ancho" id="j-nuevo">▶ Nueva partida</button>
+        <button class="boton secundario ancho" id="j-pista">💡 Pista de A*</button>
+        <div class="cruceta">
+          <button data-dir="norte">▲</button>
+          <button data-dir="oeste">◀</button>
+          <button data-dir="sur">▼</button>
+          <button data-dir="este">▶</button>
+        </div>
+      </div>
+    </aside>
+    <div class="columna ancha">
+      <div class="tarjeta">
+        <div class="tableros dos">
+          <div class="tablero-celda">
+            <div class="tablero-cabecera"><span class="insignia azul">👤 Tú</span><span class="texto-suave" id="j-h-info"></span></div>
+            <div class="lienzo-caja"><canvas id="j-canvas-h"></canvas></div>
+          </div>
+          <div class="tablero-celda">
+            <div class="tablero-cabecera"><span class="insignia verde">🤖 IA (A* + chequeo)</span><span class="texto-suave" id="j-ia-info"></span></div>
+            <div class="lienzo-caja"><canvas id="j-canvas-ia"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <div class="explicacion" id="j-mensaje">Presiona <b>Nueva partida</b> y usa las flechas.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== 5. RESULTADOS -->
+<section class="vista" id="vista-resultados">
+  <div class="guia">
+    <span>Resumen del benchmark del notebook: 14 configuraciones × 100 semillas (0–99), tablero 10×10, k<sub>máx</sub> = 200.</span>
+  </div>
+  <div class="columna ancha">
+    <div class="tarjeta">
+      <div class="titulo-con-chips">
+        <h3>Promedio por algoritmo: sin vs. con chequeo de seguridad</h3>
+        <div class="fila-chips" id="r-metricas">
+          <button class="chip activo" data-met="longitud">Longitud final</button>
+          <button class="chip" data-met="victorias">Victorias (%)</button>
+          <button class="chip" data-met="expandidos">Expandidos / decisión</button>
+          <button class="chip" data-met="tiempo_ms">Tiempo / decisión</button>
+        </div>
+      </div>
+      <svg class="grafico barras" id="r-grafico" viewBox="0 0 760 300"></svg>
+      <div class="leyenda en-linea"><span><i class="m serie1"></i>Sin chequeo</span><span><i class="m serie2"></i>Con chequeo</span></div>
+    </div>
+    <div class="tarjeta">
+      <h3>Tabla completa</h3>
+      <div class="tabla-caja"><table class="tabla" id="r-tabla"><tbody><tr><td class="vacio">Cargando…</td></tr></tbody></table></div>
+      <p class="ayuda">Fin k<sub>máx</sub>: partidas que terminaron por 200 pasos sin comer. Corte: partidas que llegaron al tope de 2500 pasos. Gen./Exp.: promedio por decisión. Frontera máx.: máximo de cada partida, promediado.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div class="aviso" id="aviso"></div>
+<script src="app.js"></script>
+</body>
+</html>
