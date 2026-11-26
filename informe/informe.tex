@@ -8,13 +8,15 @@
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{caption}
-\usepackage{enumitem}
 \usepackage[hidelinks]{hyperref}
-\captionsetup{font=small,labelfont=bf}
-\setlength{\parskip}{3pt}
-\setlist{itemsep=1pt,topsep=2pt}
+\usepackage[compact]{titlesec}
+\titlespacing*{\section}{0pt}{5pt}{2pt}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.6em}{}
+\captionsetup{font=small,labelfont=bf,skip=3pt}
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{1.2em}
 
-\title{\vspace{-1.2cm}Agente de búsqueda heurística para Snake\\
+\title{\vspace{-1.9cm}Agente de búsqueda heurística para Snake\\
 \large Representación y solución automática de problemas}
 \author{Daniel José Morales \and Juan Esteban Torres\\
 \small Escuela de Ingeniería, Ciencia y Tecnología, Universidad del Rosario}
@@ -22,174 +24,118 @@
 
 \begin{document}
 \maketitle
-\vspace{-0.8cm}
+\vspace{-0.9cm}
 
 % ============================================================
 \section{Descripción del entorno}
 
-El juego que decidimos desarrollar fue Snake, que se juega en una cuadrícula de $10 \times 10$ con celdas $(x, y) \in \{0, \dots, 9\}^2$. A simple vista el escenario es estocástico, porque el agente no sabe dónde aparecerá la siguiente fruta hasta comerse la actual. Sin embargo, una vez aparece la nueva fruta, el problema se vuelve determinista. Por eso descomponemos la partida en una secuencia de subproblemas deterministas que resuelve un agente basado en modelo y basado en objetivos.
+Elegimos Snake en una cuadrícula de $N\times N$ con $N=10$. Visto de lejos es estocástico, porque no se sabe dónde saldrá la siguiente fruta, pero mientras una fruta está en el tablero no hay azar, así que partimos la partida en subproblemas deterministas (uno por fruta) que resuelve un agente basado en modelo \cite{aima}. El entorno es completamente observable, secuencial, estático (por turnos), discreto y conocido. Tiene un solo agente en la versión base (multiagente en la variante adversaria) y es determinista por subproblema pero estocástico por partida.
 
-\begin{table}[h]
-\centering
-\small
-\caption{Caracterización del entorno.}
-\label{tab:caracterizacion}
-\begin{tabular}{ll}
-\toprule
-$\checkmark$ Completamente observable & \phantom{$\checkmark$} Parcialmente observable\\
-$\checkmark$ Single-agent (Base) & $\checkmark$ Multi-agent (Variante)\\
-$\checkmark$ Determinista (Micro) & $\checkmark$ Estocástico (Macro)\\
-\phantom{$\checkmark$} Episódico & $\checkmark$ Secuencial\\
-$\checkmark$ Estático (Por turnos) & \phantom{$\checkmark$} Dinámico\\
-$\checkmark$ Discreto & \phantom{$\checkmark$} Continuo\\
-$\checkmark$ Conocido (\emph{Model-Based}) & \phantom{$\checkmark$} Desconocido (\emph{Model-Free})\\
-\bottomrule
-\end{tabular}
-\end{table}
+\textbf{Estados.} Un estado es $s=(C,f)$, con $C=(c_1,\dots,c_L)$ el cuerpo (cabeza $c_1$, cola $c_L$, $L=|C|$) y $f$ la fruta, una celda libre de $\{0,\dots,N-1\}^2$. El espacio es discreto y finito, porque hay un número finito de cuerpos autoevitantes posibles en $N^2$ celdas.
 
-\subsection*{Estados ($S$)}
-En cada instante de tiempo $t$, el estado del entorno está definido por la tupla $s = (C, f)$, donde $C = (c_1, c_2, \dots, c_L)$ es la secuencia ordenada de coordenadas $(x, y) \in \{0, \dots, N-1\}^2$ que representan el cuerpo de la serpiente con $c_1$ como la cabeza, $c_L$ la cola y una longitud definida como $L = |C|$. $f \in \{0, \dots, N-1\}^2 \setminus C$ es la posición de la fruta actual. En las variantes con obstáculos fijos, la fruta tampoco puede aparecer sobre ellos.
+\textbf{Acciones.} $\mathcal{A}=\{\text{norte},\text{sur},\text{este},\text{oeste}\}$, discretas y con desplazamientos $\delta(a)$ de una celda en cada dirección. Una acción es aplicable si la nueva cabeza $h'=c_1+\delta(a)$ queda dentro del tablero (módulo $N$ en la variante toroidal) y no cae sobre $c_1,\dots,c_{L-1}$ ni sobre un obstáculo. La cola sí se puede pisar, porque se libera en el mismo turno. Además descartamos el giro de $180^\circ$ hacia el cuello, así que $b\le 3$.
 
-\subsection*{Acciones ($A$)}
-El conjunto de decisiones posibles lo definimos como: $\mathcal{A} = \{\text{norte}, \text{sur}, \text{este}, \text{oeste}\}$, con vectores de desplazamiento $\delta(a) \in \{(0,1), (0,-1), (1,0), (-1,0)\}$. Una acción $a \in \mathcal{A}$ es aplicable en el estado $s$ si la nueva posición de la cabeza $h' = c_1 + \delta(a)$ permanece dentro de los límites del tablero (o se envuelve modularmente en la variante toroidal) y no colisiona con los segmentos $c_1, \dots, c_{L-1}$ ni con obstáculos. La casilla de la cola $c_L$ sí es válida para $L > 2$ porque se desplaza en el mismo turno, y para $L \ge 2$ se excluye el giro de $180^\circ$ hacia el cuello $c_2$, dejando un factor de ramificación máximo $b \le 3$.
-
-\subsection*{Función de recompensa ($R$)}
-\emph{Costo / Pérdida de transición (Nivel Micro):} Cada movimiento en el árbol de búsqueda tiene un costo positivo que penaliza tanto el número de pasos como el riesgo de encierro local alrededor de la nueva cabeza $h'$:
+\textbf{Recompensa.} En el nivel de búsqueda cada paso cuesta $c(s,a,s')=1+\lambda\,r(h')$, donde $r(h')\in[0,1]$ es la fracción de las tres direcciones de avance desde $h'$ que están bloqueadas (cuerpo, muro o borde) y $\lambda\ge 0$ pondera el riesgo. En el nivel de partida, el entorno entrega la recompensa inmediata
 \[
-c(s, a, s') = 1 + \lambda \cdot r(h'), \qquad r(h') = \frac{\text{vecinos bloqueados}(h')}{3} \in [0, 1]
-\]
-donde $\text{vecinos bloqueados}(h') \in \{0, 1, 2, 3\}$ cuenta cuántas de las 3 direcciones futuras desde $h'$ están obstruidas por el cuerpo, muros o bordes del tablero, y $\lambda \ge 0$ pondera la aversión al riesgo.
-
-\emph{Señal de Recompensa Inmediata y Acumulada (Nivel Macro):} En cada turno de la partida el entorno entrega una recompensa inmediata $R(s, a, s')$ definida por el balance entre ganancias y pérdidas:
-\[
-R(s, a, s') = \begin{cases}
-+1000 - c(s,a,s') & \text{si } h' = f \text{ y } L' = N^2 - |\text{obstáculos}|, \text{ victoria} \\
-+100 - c(s,a,s') & \text{si } h' = f \text{ y } L' < N^2 - |\text{obstáculos}|, \text{ fruta comida} \\
--100 - c(s,a,s') & \text{si } s' \text{ queda sin acciones aplicables, derrota} \\
--100 - c(s,a,s') & \text{si se completan } k_{\max} \text{ pasos sin comer} \\
--c(s,a,s') & \text{en un desplazamiento normal, } h' \neq f
+R=\begin{cases}
++1000-c & \text{si se come y el tablero queda lleno (victoria)},\\
++100-c & \text{si se come una fruta},\\
+-100-c & \text{si queda sin acciones o pasan } k_{\max}=200 \text{ pasos sin comer},\\
+-c & \text{en otro caso,}
 \end{cases}
 \]
-La \textbf{recompensa acumulada} a lo largo del episodio ($G = \sum_{t} R_t$) se relaciona directamente con los objetivos del proyecto: maximizar $G$ exige maximizar el número de frutas consumidas mientras se minimiza la cantidad de pasos y el riesgo de auto-encierro.
+y $G=\sum_t R_t$ se maximiza comiendo más frutas con menos pasos y riesgo.
 
-\subsection*{Función de transición ($T$)}
-Dada una acción aplicable $a$ que lleva la cabeza a $h' = c_1 + \delta(a)$, el entorno evoluciona mediante dos casos:
-\begin{enumerate}
-  \item \emph{Desplazamiento sin comer ($h' \neq f$):} El cuerpo avanza una celda y la cola libera su casilla anterior, resultando en $C' = (h', c_1, \dots, c_{L-1})$ con la misma fruta $f' = f$.
-  \item \emph{Crecimiento al comer ($h' = f$):} La serpiente incrementa su longitud en una unidad sin desplazar la cola, resultando en $C' = (h', c_1, \dots, c_L)$, y aparece una nueva fruta $f'$ elegida con distribución aleatoria uniforme entre las celdas libres (o colocada por el oponente Minimax en la variante adversaria).
-\end{enumerate}
-La dinámica física del cuerpo es \textbf{completamente conocida (\emph{Model-Based})}, lo que permite al agente simular trayectorias exactas durante la planeación.
+\textbf{Transición.} Si $h'\ne f$ el cuerpo avanza y $C'=(h',c_1,\dots,c_{L-1})$. Si $h'=f$ la serpiente crece, $C'=(h',c_1,\dots,c_L)$, y aparece una fruta nueva en una celda libre elegida al azar (o por un oponente Minimax en la variante adversaria). La dinámica es completamente conocida (\emph{model-based}), de modo que el agente puede simular sus planes antes de ejecutarlos.
 
-\subsection*{Objetivo y estados terminales}
-\begin{itemize}
-  \item \emph{Objetivo por subproblema (Micro):} Encontrar un camino de acciones que lleve la cabeza hasta la fruta actual ($c_1 = f$) minimizando el costo acumulado $g(n) = \sum c(s_i, a_i, s_{i+1})$, sujeto a la restricción de seguridad de que en el estado final simulado exista al menos una ruta válida desde la cabeza hasta la cola $c_L$.
-  \item \emph{Objetivo global (Macro):} Maximizar la longitud final alcanzada $L_{\text{final}}$ (y la recompensa acumulada $G$) hasta lograr llenar el tablero.
-  \item \emph{Estados terminales:} Un episodio termina cuando se alcanza cualquiera de los siguientes tres estados: \textbf{(1) Victoria}, al llenar todas las celdas disponibles del tablero ($L = 100$ en la versión base $10\times 10$); \textbf{(2) Encierro o colisión}, cuando desde el estado actual no existe ninguna acción aplicable ($\mathcal{A}(s) = \emptyset$); o \textbf{(3) Límite de pasos sin comer}, cuando transcurren $k_{\max} = 200$ turnos consecutivos sin consumir una fruta.
-\end{itemize}
-
-\subsection*{Variantes de complejidad creciente}
-\begin{enumerate}
-  \item \textbf{Tablero Toroidal (sin bordes):} La distancia Manhattan clásica deja de ser admisible y el agente emplea la distancia Manhattan toroidal $\min(|\Delta x|, N-|\Delta x|) + \min(|\Delta y|, N-|\Delta y|)$.
-  \item \textbf{Múltiples frutas simultáneas (3 frutas) + Obstáculos fijos:} El agente toma $h(s) = \min_{i} d(c_1, f_i)$ sorteando muros estáticos en un tablero $12 \times 12$.
-  \item \textbf{Fruta Adversaria (Minimax con Poda Alfa-Beta):} Un segundo jugador (\texttt{AgenteFruta\allowbreak Adversaria}) coloca cada nueva fruta en la celda libre que minimiza la utilidad esperada de la serpiente.
-\end{enumerate}
+\textbf{Objetivo y estados terminales.} En cada subproblema, llevar la cabeza a la fruta con el menor costo acumulado $g(n)$, de tal forma que al llegar siga existiendo un camino de la cabeza a la cola. En la partida, maximizar $L_{\text{final}}$ y $G$. La partida termina por victoria ($L=N^2-|\text{obstáculos}|$), por encierro ($\mathcal{A}(s)=\emptyset$) o por $k_{\max}$ pasos sin comer.
 
 % ============================================================
 \section{Tipo de agente y justificación}
 
-Nuestro agente, \texttt{AgenteSnake}, es un agente basado en modelo y basado en objetivos. Es basado en modelo porque conoce exactamente cómo se mueve el cuerpo de la serpiente, así que puede simular qué pasaría si sigue un camino antes de moverse. Es basado en objetivos porque cada vez que aparece una fruta se plantea una meta concreta, que es llevar la cabeza hasta esa casilla, y busca una secuencia de acciones que la cumpla.
+\texttt{AgenteSnake} es un agente basado en modelo y en objetivos. Conoce cómo se mueve el cuerpo, entonces puede simular qué pasa si sigue un camino, y cada fruta nueva le da una meta concreta que planear. Un agente reactivo no nos servía, porque con solo las casillas vecinas no ve que un camino corto lo encierra diez pasos después. Planea hasta la fruta, ejecuta el plan y replanea cuando cambia la fruta o la siguiente acción deja de ser aplicable.
 
-Elegimos este tipo de agente porque encaja con la forma del problema. Mientras una fruta está en el tablero no hay nada aleatorio, de modo que planear todo el camino de una vez es razonable. La incertidumbre solo aparece cuando la fruta se come y surge otra en una casilla al azar. Por eso el agente trabaja por ciclos: planea un camino hasta la fruta actual, lo ejecuta paso a paso y vuelve a planear cuando cambia la fruta o cuando la siguiente acción del plan deja de ser aplicable. Un agente reactivo simple no serviría, porque mirando solo las casillas vecinas no puede anticipar que un camino corto lo va a dejar encerrado diez pasos después.
-
-La parte más importante del agente es el chequeo de seguridad. Antes de comprometerse con un camino, el agente toma el estado en el que quedaría justo después de comer y resuelve un segundo problema de búsqueda con BFS, esta vez desde la cabeza hasta su propia cola $c_L$. La idea es que si la cabeza todavía puede alcanzar la cola, la serpiente siempre tiene una salida, porque la cola va liberando casillas a medida que avanza. Si ese camino existe, el agente ejecuta el plan completo. Si no existe, o si ni siquiera hay camino hasta la fruta, el agente no se arriesga y da un solo paso de evasión. Para elegirlo prueba cada acción aplicable, se queda con las que mantienen un camino hasta la cola y entre ellas prefiere la que deja la cola más lejos, tiene menos vecinos bloqueados y se acerca un poco a la fruta. Después de ese paso vuelve a planear desde cero.
+Lo más importante es el \emph{chequeo de seguridad}. Antes de aceptar un plan, simulamos el estado que quedaría al comer y corremos un BFS desde la cabeza hasta la cola $c_L$. Si todavía hay camino, la serpiente siempre tiene salida, porque la cola va liberando casillas. Si no lo hay (o no hay camino a la fruta), da un solo paso de evasión: entre las acciones que conservan camino a la cola prefiere la que la deja más lejos, con menos vecinos bloqueados y algo más cerca de la fruta, y luego replanea.
 
 % ============================================================
 \section{Algoritmos implementados}
 
-Todos los algoritmos están en \texttt{busqueda.py} y son versiones en grafo de los vistos en clase. Cada uno lleva una lista de estados explorados para no expandir dos veces el mismo estado. Para que esa lista sea pequeña, la función \texttt{codigo} identifica un estado solo por la casilla de la cabeza. Es una simplificación consciente. Dentro de un mismo subproblema el cuerpo cambia poco entre caminos alternativos, y así el espacio de búsqueda queda acotado por las $N^2 = 100$ casillas del tablero. A cambio, en casos raros la búsqueda puede descartar un camino válido que llega a una casilla ya visitada con el cuerpo en otra posición.
-
-\begin{itemize}
-  \item \textbf{Anchura, BFS.} Expande por niveles con una cola FIFO. Encuentra el camino con menos pasos, que coincide con el de menor costo solo cuando $\lambda = 0$.
-  \item \textbf{Profundidad, DFS.} Usa una pila y sigue una rama hasta el fondo antes de retroceder. Siempre encuentra un camino si existe, pero suele ser muy largo. Lo incluimos como punto de contraste.
-  \item \textbf{Costo uniforme, Dijkstra.} Expande el nodo con menor $g(n)$. Con $\lambda > 0$ es el único algoritmo ciego que respeta el costo por riesgo.
-  \item \textbf{Avara.} Ordena la frontera solo por $h(n)$. Es la más rápida, pero puede preferir un camino que parece corto y no lo es.
-  \item \textbf{A$^*$.} Ordena por $f(n) = g(n) + h(n)$. Con una heurística admisible devuelve el camino de menor costo y expande menos nodos que Dijkstra.
-  \item \textbf{Haz con $k = 3$.} Igual que A$^*$, pero en cada iteración conserva solo los $k$ mejores nodos de la frontera. Usa muy poca memoria, aunque puede podar justo el nodo que llevaba a la solución.
-\end{itemize}
-
-En la Tabla~\ref{tab:algoritmos}, $b \le 3$ es el factor de ramificación, $d$ la profundidad de la solución más corta, $m$ la profundidad máxima del grafo, $C^*$ el costo óptimo y $\varepsilon = 1$ el costo mínimo de un paso. Como el grafo tiene a lo sumo $N^2$ nodos, en la práctica todas estas cotas quedan limitadas por $O(N^2)$.
+En \texttt{busqueda.py} implementamos versiones en grafo de BFS, DFS, costo uniforme (UCS), avara, A$^*$ y búsqueda en haz con $k=3$. Una decisión de diseño importante es la función \texttt{codigo}: identifica un estado solo por la celda de la cabeza, de modo que la lista de explorados tiene a lo sumo $N^2=100$ entradas. Esto simplifica la búsqueda, pero dos caminos que llegan a la misma celda con el cuerpo distinto se tratan como el mismo estado, y a veces se descarta uno válido.  La Tabla~\ref{tab:alg} resume las propiedades, con $d$ la profundidad de la solución, $m$ la máxima, $C^*$ el costo óptimo y $\varepsilon=1$ el costo mínimo por paso (en la práctica todo queda acotado por $N^2$ nodos).
 
 \begin{table}[h]
-\centering
-\small
-\caption{Propiedades de los algoritmos en el subproblema de llegar a la fruta.}
-\label{tab:algoritmos}
+\centering\footnotesize\renewcommand{\arraystretch}{0.92}
+\caption{Propiedades de los algoritmos en el subproblema de llegar a la fruta \cite{aima}.}
+\label{tab:alg}
 \begin{tabular}{lcccc}
 \toprule
 Algoritmo & Completo & Óptimo & Tiempo & Espacio\\
 \midrule
-BFS (anchura)       & Sí & Solo si $\lambda = 0$ & $O(b^d)$ & $O(b^d)$\\
-DFS (profundidad)   & Sí, grafo finito & No & $O(b^m)$ & $O(bm)$\\
-UCS (Dijkstra)      & Sí & Sí & $O(b^{1+\lfloor C^*/\varepsilon \rfloor})$ & $O(b^{1+\lfloor C^*/\varepsilon \rfloor})$\\
-Avara               & Sí, grafo finito & No & $O(b^m)$ & $O(b^m)$\\
-A$^*$               & Sí & Sí, con $h$ admisible & $O(b^d)$ & $O(b^d)$\\
-Haz ($k=3$)         & No & No & $O(k\,b\,m)$ & $O(k)$\\
+BFS & Sí & Solo con $\lambda=0$ & $O(b^d)$ & $O(b^d)$\\
+DFS & Sí (grafo finito) & No & $O(b^m)$ & $O(bm)$\\
+UCS \cite{dijkstra} & Sí & Sí & $O(b^{1+\lfloor C^*/\varepsilon\rfloor})$ & $O(b^{1+\lfloor C^*/\varepsilon\rfloor})$\\
+Avara & Sí (grafo finito) & No & $O(b^m)$ & $O(b^m)$\\
+A$^*$ \cite{hart} & Sí & Sí, con $h$ admisible & $O(b^d)$ & $O(b^d)$\\
+Haz ($k=3$) & No & No & $O(kbm)$ & $O(k)$\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection*{Heurísticas}
-Implementamos tres heurísticas. La primera, $h_1$, es la distancia Manhattan entre la cabeza y la fruta. La segunda, $h_2$, es la distancia euclídea. La tercera, $h_3 = h_1 + 2\,r(c_1)$, suma a la Manhattan una penalización por los vecinos bloqueados alrededor de la cabeza.
-
-$h_1$ es admisible porque cada movimiento cambia la cabeza en una sola casilla y cuesta al menos 1, así que nunca se llega a la fruta con un costo menor que la distancia Manhattan. También es consistente, ya que entre dos estados vecinos su valor cambia como mucho en 1. $h_2$ es menor o igual que $h_1$, por lo que también es admisible, pero informa menos. $h_3$ no es admisible, porque la penalización puede sumar hasta 2 unidades que el camino real no paga. En la Sección~3.3 del notebook lo comprobamos sobre 30 estados de una partida real, comparando cada heurística con el costo óptimo calculado con Dijkstra. $h_1$ y $h_2$ fueron admisibles en todos los estados y $h_3$ solo en el 73\,\%. Aun así, en esa muestra A$^*$ encontró el óptimo con las tres, y $h_3$ expandió en promedio 10.8 nodos frente a 10.9 de $h_1$ y 12.2 de $h_2$.
-
-\subsection*{Comparación en una instancia}
-En la Sección~3.2 del notebook corrimos los seis algoritmos sobre una misma instancia con 8 obstáculos y $\lambda = 0.5$. Todos encontraron la fruta. BFS llegó en 8 pasos pero con costo 8.67, mayor que el óptimo de 8.33, porque cuenta pasos y no riesgo. DFS dio un camino de 20 pasos y expandió 87 nodos. Dijkstra encontró el óptimo expandiendo 78 nodos y A$^*$ con $h_1$ lo encontró expandiendo 20. La avara con $h_1$ expandió solo 9 pero no llegó al óptimo, y el haz sí llegó con 14 nodos expandidos y una frontera de apenas 3.
+Usamos tres heurísticas: $h_1$ (distancia Manhattan a la fruta, toroidal en esa variante), $h_2$ (distancia euclídea) y $h_3=h_1+2\,r(c_1)$. $h_1$ es admisible y consistente, porque cada paso mueve la cabeza una celda y cuesta al menos 1. $h_2\le h_1$, así que también es admisible aunque informa menos. $h_3$ no lo es, ya que la penalización suma hasta 2 unidades que el camino real no paga. En el notebook lo comprobamos con 30 estados de una partida real: $h_1$ y $h_2$ fueron admisibles en todos y $h_3$ solo en el 73\,\%.
 
 % ============================================================
 \section{Diseño experimental, resultados y análisis}
 
-Para comparar los algoritmos jugamos partidas completas sobre las semillas 0 a 99, de modo que cada configuración enfrenta exactamente las mismas secuencias de frutas. Todas las partidas usan un tablero de $10 \times 10$ sin obstáculos, la cabeza empieza en $(5,5)$, $k_{\max} = 200$ y cada partida se corta a los 2500 pasos si no ha terminado. Evaluamos los seis algoritmos con y sin chequeo de seguridad. Con chequeo agregamos además A$^*$ con $h_2$ y A$^*$ con $\lambda = 0.5$, para ver el efecto de la heurística y del costo por riesgo. Dijkstra se corre siempre con $\lambda = 0.5$, porque con $\lambda = 0$ se comporta igual que BFS. En total son 14 configuraciones y 1400 partidas, guardadas en \texttt{resultados\_benchmark\_100\_semillas.csv}. De cada partida registramos la longitud final, si hubo victoria, la causa de fin, los pasos por fruta y, para cada decisión, los nodos generados y expandidos, la frontera máxima y el tiempo.
+Jugamos partidas completas con las semillas 0 a 99, así que todas las configuraciones enfrentan las mismas secuencias de frutas. Usamos tablero $10\times10$ sin obstáculos, $k_{\max}=200$ y un tope de 2500 pasos por partida. Evaluamos los seis algoritmos con y sin chequeo de seguridad, y con chequeo añadimos A$^*$ con $h_2$ y A$^*$ con $\lambda=0.5$. UCS siempre corre con $\lambda=0.5$, porque con $\lambda=0$ es igual a BFS. Son 14 configuraciones y 1400 partidas (Tabla~\ref{tab:res}). Medimos longitud final, victoria y causa de fin por partida, y nodos, frontera y tiempo por decisión.
 
-\input{tabla_resultados.tex}
+\begin{table}[h]
+\centering\footnotesize\renewcommand{\arraystretch}{0.88}\setlength{\tabcolsep}{4pt}
+\caption{Resultados promedio sobre 100 semillas. Exp. y $t$ son por decisión. \emph{Fin} cuenta partidas terminadas por $k_{\max}$.}
+\label{tab:res}
+\begin{tabular}{lrrrrrr}
+\toprule
+Configuración & Long. & Vict. & Fin & Pasos/fruta & Exp. & $t$ (ms)\\
+\midrule
+\multicolumn{7}{l}{\textit{Sin chequeo de seguridad}}\\
+BFS & 34.2 & 0 & 0 & 8.0 & 37.4 & 0.88\\
+DFS & 23.0 & 0 & 0 & 40.5 & 46.5 & 1.05\\
+UCS ($\lambda{=}0.5$) & 32.1 & 0 & 0 & 7.8 & 44.9 & 1.77\\
+Avara & 34.1 & 0 & 0 & 8.2 & 12.8 & 0.97\\
+A$^*$ ($h_1$) & 34.9 & 0 & 0 & 8.1 & 20.7 & 0.97\\
+Haz & 34.7 & 0 & 0 & 8.3 & 16.1 & 0.71\\
+\midrule
+\multicolumn{7}{l}{\textit{Con chequeo de seguridad}}\\
+BFS & 91.5 & 8 & 82 & 19.1 & 50.7 & 1.09\\
+DFS & 94.4 & 75 & 0 & 25.1 & 124.6 & 2.56\\
+UCS ($\lambda{=}0.5$) & 91.4 & 0 & 90 & 20.9 & 53.2 & 2.02\\
+Avara & 93.5 & 7 & 89 & 20.0 & 43.8 & 1.73\\
+A$^*$ ($h_1$) & 93.3 & 2 & 92 & 20.3 & 47.9 & 1.89\\
+A$^*$ ($h_1$, $\lambda{=}0.5$) & 91.0 & 2 & 92 & 20.7 & 46.9 & 2.71\\
+Haz & 92.3 & 1 & 89 & 20.1 & 42.3 & 1.62\\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\begin{figure}[!htb]
-\centering
-\includegraphics[width=\linewidth]{fig_resultados.pdf}
-\caption{Longitud final media y nodos expandidos por decisión con y sin chequeo de seguridad. Se usa $\lambda=0$ salvo en UCS, que usa $\lambda=0.5$. La línea punteada marca el tablero lleno.}
-\label{fig:resultados}
-\end{figure}
+\textbf{El chequeo pesa más que el algoritmo.} Sin chequeo, las 600 partidas terminaron con la serpiente encerrada y BFS, UCS, avara, A$^*$ y haz quedaron entre 32 y 35 de longitud. Ir siempre por el camino más corto funciona hasta que el cuerpo mide unas 30 casillas, y ahí la serpiente se mete en una zona sin salida. Con chequeo la longitud media sube a 91--94 y los encierros bajan a entre 2 y 10 de cada 100. A cambio, los pasos por fruta pasan de 8 a unos 20, porque a veces el agente rodea o sigue su cola, y cada decisión expande más nodos por el BFS extra a la cola. Ninguna pasa de 3 ms por decisión.
 
-\subsection*{El chequeo de seguridad es lo que más importa}
-El resultado más claro de la Tabla~\ref{tab:resultados} es que el chequeo de seguridad pesa mucho más que el algoritmo elegido. Sin él, las 600 partidas terminaron con la serpiente encerrada, y BFS, Dijkstra, la avara, A$^*$ y el haz quedaron todos entre 32 y 35 de longitud. Ir siempre por el camino más corto funciona al principio, pero cuando el cuerpo pasa de unas 30 casillas la serpiente termina metiéndose en una zona sin salida. Con el chequeo, la longitud media sube a valores entre 91 y 94 y los encierros bajan a entre 2 y 10 partidas de cada 100.
+\textbf{Pocas victorias.} Con chequeo, entre el 82\,\% y el 92\,\% de las partidas terminan por $k_{\max}$. Con el tablero casi lleno casi cualquier ruta a la fruta deja a la serpiente sin salida, así que el agente se queda siguiendo su cola, sobrevive pero no vuelve a comer. La excepción es DFS, que ganó 75 partidas. Sus caminos largos barren el tablero casi por filas y dejan el cuerpo ordenado, con espacio libre detrás. Sin chequeo ese mismo comportamiento lo hace el peor (23 de longitud y 40 pasos por fruta). Eso sí, 23 de sus partidas llegaron al tope de 2500 pasos sin terminar y es la configuración más cara.
 
-El costo de esa seguridad se ve en dos lugares. Los pasos por fruta pasan de unos 8 a unos 20, porque el agente a veces rodea o sigue su cola en vez de ir directo. Además, cada decisión expande más nodos, ya que aparte de buscar la fruta hay que resolver la búsqueda hasta la cola. Aun así, ninguna configuración tarda en promedio más de 3 ms por decisión.
-
-\subsection*{Por qué casi no hay victorias}
-Con chequeo, la mayoría de las partidas no termina por choque sino por llegar a $k_{\max}$, entre el 82\,\% y el 92\,\% según el algoritmo. Cuando la serpiente ya ocupa más de 90 casillas, casi cualquier camino hacia la fruta la dejaría sin salida, así que el agente se queda dando pasos de evasión detrás de su cola. Eso la mantiene viva, pero entra en un ciclo y no vuelve a comer. El chequeo evita perder, pero por sí solo no basta para ganar.
-
-La excepción es DFS, que ganó 75 de las 100 partidas. Su forma de explorar produce caminos largos que barren el tablero casi fila por fila, y ese recorrido deja el cuerpo ordenado y con espacio libre detrás. Sin chequeo ese mismo comportamiento es el peor, con 23 de longitud y 40 pasos por fruta. Hay que tener en cuenta que 23 de sus partidas con chequeo llegaron al tope de 2500 pasos sin terminar, así que su longitud media está algo subestimada. También es la configuración más cara, con 124.6 nodos expandidos por decisión.
-
-\subsection*{Heurísticas y costo por riesgo}
-Sin chequeo, la avara expandió 12.8 nodos por decisión, el haz 16.1 y A$^*$ 20.7, frente a 37.4 de BFS y 44.9 de Dijkstra, sin perder longitud. Con chequeo esas diferencias casi desaparecen, porque la búsqueda hasta la cola, que siempre se hace con BFS, pasa a ser la parte más costosa de cada decisión. Cambiar $h_1$ por $h_2$ en A$^*$ no cambió nada importante: 93.3 contra 93.1 de longitud y prácticamente los mismos nodos. Usar $\lambda = 0.5$ tampoco ayudó. A$^*$ bajó de 93.3 a 91.0 y su tiempo por decisión subió de 1.89 a 2.71 ms. El costo por riesgo solo mira las casillas vecinas de la cabeza, y eso es demasiado local para prevenir los encierros, que se forman a la escala de todo el cuerpo. El chequeo de seguridad sí mira esa escala, y por eso es el que marca la diferencia.
+\textbf{Heurísticas y riesgo.} Sin chequeo, avara, haz y A$^*$ expandieron entre 13 y 21 nodos por decisión frente a 37 de BFS y 45 de UCS, sin perder longitud. Con chequeo la diferencia casi desaparece, porque domina el BFS hasta la cola. Cambiar $h_1$ por $h_2$ casi no cambió nada (93.1 contra 93.3 de longitud y casi los mismos nodos), y $\lambda=0.5$ incluso empeoró a A$^*$ (de 93.3 a 91.0 y de 1.89 a 2.71 ms). El riesgo mira solo los vecinos de la cabeza, demasiado local para evitar encierros que dependen de todo el cuerpo.
 
 % ============================================================
 \section{Conclusiones}
 
-Descomponer Snake en una secuencia de subproblemas deterministas funcionó bien. Cada subproblema se resuelve en milisegundos con cualquiera de los seis algoritmos, y como el agente conoce el modelo puede simular el resultado de un plan antes de ejecutarlo.
+Dividir Snake en subproblemas deterministas funcionó: cada uno se resuelve en milisegundos y el modelo conocido permite simular antes de actuar. Lo que más importó fue revisar adónde lleva el camino, no qué tan bueno es el algoritmo: sin chequeo todos se encierran cerca de las 34 casillas y con él superan las 90. A$^*$ con $h_1$ es la opción más equilibrada, y avara y haz salen más baratas casi sin perder calidad.
 
-La conclusión principal es que buscar bien no alcanza si no se revisa a dónde lleva el camino. Sin el chequeo de seguridad todos los algoritmos se encierran alrededor de las 34 casillas. Con él, la serpiente llega en promedio a más de 90 de las 100. Frente a eso, las diferencias entre algoritmos y heurísticas son pequeñas. A$^*$ con $h_1$ sigue siendo la opción más equilibrada, porque es óptimo y expande pocos nodos. La avara y el haz son más baratos y en este problema casi no pierden calidad.
-
-El punto débil del agente está al final de la partida. Con el tablero casi lleno prefiere seguir su cola antes que arriesgarse, y casi siempre termina por $k_{\max}$. El buen resultado de DFS sugiere que para ganar hace falta recorrer el tablero de forma más ordenada en la fase final, por ejemplo con un ciclo hamiltoniano, o aceptar caminos más largos que dejen espacio libre detrás. Ese sería el siguiente paso natural del proyecto, junto con medir de forma sistemática las tres variantes: el tablero toroidal, las tres frutas con obstáculos y la fruta adversaria con Minimax.
+La limitación principal está al final de la partida. Con el tablero casi lleno el agente prefiere seguir su cola y casi siempre termina por $k_{\max}$. El resultado de DFS sugiere que hace falta un recorrido más ordenado en esa fase, por ejemplo con un ciclo hamiltoniano. Otra limitación es que \texttt{codigo} guarda solo la cabeza. Como mejora futura queda evaluar de forma sistemática las variantes toroidal, de tres frutas con obstáculos y de fruta adversaria (Minimax $\alpha$--$\beta$), que por ahora solo mostramos en el notebook.
 
 % ============================================================
-\section{Declaración del uso de IA}
-% Revisar y ajustar para que refleje exactamente cómo usaron la IA.
-Usamos herramientas de IA generativa, según lo autorizado en las instrucciones del proyecto, en tres partes del trabajo. La primera fue el desarrollo de la aplicación gráfica SnakeLab Studio, es decir \texttt{interfaz.py} y la carpeta \texttt{web/}. La segunda fue la revisión del código y del notebook para encontrar errores y celdas incompletas. La tercera fue el apoyo en la redacción de algunas secciones de este informe a partir de nuestros resultados. El modelado del problema, el diseño del agente, los algoritmos y los experimentos son trabajo nuestro, y revisamos todo el texto y el código antes de entregarlo.
+\section{Uso de IA}
+Usamos IA generativa para desarrollar la interfaz gráfica SnakeLab Studio (\texttt{interfaz.py} y \texttt{web/}), para revisar el código y el notebook en busca de errores, y para ayudar a condensar y pulir la redacción de este informe, con base en nuestros resultados y en un borrador propio.
 
-% ============================================================
-\begin{thebibliography}{9}\small
-\bibitem{aima} S.~Russell y P.~Norvig, \emph{Artificial Intelligence: A Modern Approach}, 4.\textsuperscript{a} ed. Pearson, 2021.
+\vspace{-4pt}\begin{thebibliography}{9}\footnotesize\setlength{\itemsep}{0pt}
+\bibitem{aima} S.~Russell y P.~Norvig, \emph{Artificial Intelligence: A Modern Approach}, 4.\textsuperscript{a} ed., Pearson, 2021.
+\bibitem{hart} P.~E.~Hart, N.~J.~Nilsson y B.~Raphael, ``A formal basis for the heuristic determination of minimum cost paths'', \emph{IEEE Trans. Systems Science and Cybernetics}, 4(2), 100--107, 1968.
+\bibitem{dijkstra} E.~W.~Dijkstra, ``A note on two problems in connexion with graphs'', \emph{Numerische Mathematik}, 1, 269--271, 1959.
 \end{thebibliography}
 
 \end{document}
